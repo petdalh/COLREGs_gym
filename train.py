@@ -9,6 +9,7 @@ import argparse
 from pathlib import Path
 
 import numpy as np
+import interval
 
 from mchorcrux.numpy_core.controllers.adaptive_seakeeping import (
     MRACShipController,
@@ -76,7 +77,7 @@ def train(num_episodes: int, dt: float, checkpoint_dir: str):
 
     env = make_env(dt=dt)
     tube = select_reachable_set(ellipsoids, env.encounter_speed)
-    env.configure_monitoring(spec, tube, sampling_rate=20)
+    env.configure_monitoring(spec, tube, sampling_rate=1)
 
     obs = env.reset()
 
@@ -106,9 +107,15 @@ def train(num_episodes: int, dt: float, checkpoint_dir: str):
         score = 0.0
         step = 0
         ep_robustness = []
-
+        current_robustness = interval.interval(-np.inf, -np.inf)
         while not done:
-            action = agent.choose_action(obs)
+            if current_robustness.l > 0:
+                print("crossing situation detected")
+                action_mask = env.get_action_mask("crossing")
+                action = agent.choose_action(action_mask, obs)
+            else:
+                action = agent.choose_action(obs)
+            # action = agent.choose_action(obs)
             psi_d, u_d = decode_action(action, obs)
             tau = controller.compute_action_minimal(env.get_state(), psi_d, u_d)
 
@@ -117,6 +124,7 @@ def train(num_episodes: int, dt: float, checkpoint_dir: str):
             # Collect robustness when available
             if "robustness" in info:
                 ep_robustness.append(info["robustness"])
+                current_robustness = info["robustness"]
 
             if done:
                 reward = shape_terminal_reward(reward, info.get("reason", ""))
