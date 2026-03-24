@@ -6,12 +6,23 @@ collision detection, and pacSTL robustness evaluation.
 """
 
 import numpy as np
-from McHorcrux.numpy_core.gym.mc_gym_csad_numpy import McGym
+from mchorcrux.numpy_core.gym.mc_gym_csad_numpy import McGym
+from pacstl.common.interfaces import PACReachableSet, TimeStampedState
+from pacstl.domains.colregs.utils import VesselModel
 
 
 class ColregsGym(McGym):
-    def __init__(self, dt: float, grid_width: float, grid_height: float, **kwargs):
-        super().__init__(dt=dt, grid_width=grid_width, grid_height=grid_height, **kwargs)
+    def __init__(
+        self,
+        vessel_model: VesselModel,
+        dt: float,
+        grid_width: float,
+        grid_height: float,
+        **kwargs,
+    ):
+        super().__init__(
+            dt=dt, grid_width=grid_width, grid_height=grid_height, **kwargs
+        )
 
         # Encounter state
         self.encounter_type: str | None = None
@@ -25,6 +36,11 @@ class ColregsGym(McGym):
         self.spec = None
         self.ellipsoids_Ab_dict: dict | None = None
         self.robustness_sampling_rate: int = 10
+
+        self.v_min = vessel_model.v_min
+        self.v_max = vessel_model.v_max
+        self.r_min = vessel_model.yaw_dot_min
+        self.r_max = vessel_model.yaw_dot_max
 
         # Reward bookkeeping
         self.prev_dist_to_goal: float = 0.0
@@ -54,6 +70,17 @@ class ColregsGym(McGym):
         simtime: float = 150.0,
     ):
         """Configure a COLREGs encounter scenario."""
+
+        if target_speed > self.v_max:
+            raise ValueError(
+                f"target_speed={target_speed} exceeds vessel model v_max={self.v_max}. "
+                "The pacSTL scaling assumes the obstacle speed is within [v_min, v_max]."
+            )
+        if target_speed < self.v_min:
+            raise ValueError(
+                f"target_speed={target_speed} is below vessel model v_min={self.v_min}."
+            )
+
         own_n, own_e, own_psi_deg = start_position
         own_psi_rad = np.deg2rad(own_psi_deg)
 
@@ -117,7 +144,11 @@ class ColregsGym(McGym):
         state = self.get_state()
         eta, nu = state["eta"], state["nu"]
         gn, ge = self.goal[:2]
-        tgt = self.encounter_vessel_eta[:2] if self.encounter_vessel_eta is not None else np.zeros(2)
+        tgt = (
+            self.encounter_vessel_eta[:2]
+            if self.encounter_vessel_eta is not None
+            else np.zeros(2)
+        )
         return np.concatenate([eta[:2], [eta[-1]], nu, [gn, ge], tgt])
 
     # ------------------------------------------------------------------
@@ -143,12 +174,19 @@ class ColregsGym(McGym):
         # Predict ego trajectory: constant velocity, constant heading
         ego_trajectory = {}
         reachable_tube = {}
-        for time_step, pac_set in self.ellipsoids_Ab_dict.items():
+        for time_step, raw_tuple in self.ellipsoids_Ab_dict.items():
+            A, b, c = raw_tuple
+
             predicted = ego_now.copy()
             predicted[0] += ego_vn * time_step
             predicted[1] += ego_ve * time_step
-            ego_trajectory[time_step] = predicted
-            reachable_tube[time_step] = pac_set
+
+            ego_trajectory[time_step] = TimeStampedState(
+                time_step=time_step, state_array=predicted
+            )
+            reachable_tube[time_step] = PACReachableSet(
+                time_step=time_step, A_matrix=A, b_vector=b, center=c
+            )
 
         return self.spec.evaluate(ego_trajectory, reachable_tube)
 

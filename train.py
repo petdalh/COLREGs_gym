@@ -10,17 +10,19 @@ from pathlib import Path
 
 import numpy as np
 
-from McHorcrux.numpy_core.controllers.adaptive_seakeeping import (
+from mchorcrux.numpy_core.controllers.adaptive_seakeeping import (
     MRACShipController,
     heading_to_goal,
 )
-from McHorcrux.numpy_core.rl_training.reachable_sets import (
-    preload_reachable_sets,
-    select_reachable_set,
-)
+
 from colregs_gym import ColregsGym
 from ddpg.agent import Agent
-from rules.core.factory import create as create_spec
+from pacstl.core.factory import create as create_spec
+import pacstl.domains
+from pacstl.domains.colregs.utils import USV_DEFAULT, VesselModel
+from reachable_sets import preload_reachable_sets, select_reachable_set
+from plotting import plot_robustness 
+
 
 
 # ------------------------------------------------------------------
@@ -49,7 +51,7 @@ def shape_terminal_reward(reward: float, reason: str) -> float:
 # ------------------------------------------------------------------
 
 def make_env(dt: float = 0.08) -> ColregsGym:
-    env = ColregsGym(dt=dt, grid_width=25, grid_height=30)
+    env = ColregsGym(dt=dt, vessel_model=USV_DEFAULT, grid_width=25, grid_height=30)
     env.set_encounter(
         start_position=(1.5, 7.5, 0.0),
         wave_conditions=(0.05, 1.5, 0),
@@ -70,7 +72,7 @@ def make_env(dt: float = 0.08) -> ColregsGym:
 def train(num_episodes: int, dt: float, checkpoint_dir: str):
     # pacSTL setup
     spec = create_spec("colregs", "crossing_rule")
-    ellipsoids = preload_reachable_sets("voyager")
+    ellipsoids = preload_reachable_sets()
 
     env = make_env(dt=dt)
     tube = select_reachable_set(ellipsoids, env.encounter_speed)
@@ -147,8 +149,12 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint-dir", default="checkpoints/ddpg")
     args = parser.parse_args()
 
-    train(
+    scores, robustness = train(
         num_episodes=args.episodes,
         dt=args.dt,
         checkpoint_dir=args.checkpoint_dir,
     )
+
+    print(robustness)
+    #plot_robustness(robustness)
+
