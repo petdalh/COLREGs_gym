@@ -1,6 +1,7 @@
 /old_rl_training/
 .DS_Store
-/ddpg/
+ddpg/
+logs/
 __pycache__/
 *.pyc
 *.pyo
