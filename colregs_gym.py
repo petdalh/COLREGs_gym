@@ -63,6 +63,11 @@ class ColregsGym(McGym):
         self._encounter_active = False
         self._active_maneuver_spec = None
 
+        # Mask parameters
+        self._cached_mask = np.ones(N_DISCRETE_ACTIONS, dtype=bool)
+        self._mask_recompute_interval = 2
+        self._steps_since_mask_update = 0
+
     # ------------------------------------------------------------------
     # Configuration
     # ------------------------------------------------------------------
@@ -142,30 +147,34 @@ class ColregsGym(McGym):
         return self._obs(), {}
 
     def step(self, action: int):
-        if self.encounter_vessel_eta is not None:
-            self._propagate_encounter_vessel()
-        
+        total_reward = 0.0
+        decision_interval = 5  
+
         if self._step_count % 100 == 0:
-            print(f"Step {self._step_count} completed...")
+            print(f"Step {self._step_count}")
 
-        # Decode discrete action to heading/speed reference
-        obs = self._obs()
-        psi_d, u_d = self.decode_discrete_actions(action, obs)
+        for _ in range(decision_interval):
+            if self.encounter_vessel_eta is not None:
+                self._propagate_encounter_vessel()
 
-        # Compute continuous torque internally
-        tau = self._controller.compute_action_minimal(self.get_state(), psi_d, u_d)
+            obs = self._obs()
+            psi_d, u_d = self.decode_discrete_actions(action, obs)
+            tau = self._controller.compute_action_minimal(self.get_state(), psi_d, u_d)
 
-        # Step the parent McGym with the continuous torque
-        _, reward, terminated, truncated, info = super().step(tau)
-        self._step_count += 1
+            _, reward, terminated, truncated, info = super().step(tau)
+            self._step_count += 1
+            total_reward += reward
 
-        # pacSTL evaluation at configured rate
+            if terminated or truncated:
+                break
+
+        # pacSTL evaluation once per decision step, not once per env step
         if self._step_count % self.robustness_sampling_rate == 0:
             robustness = self.evaluate_robustness()
             info["robustness"] = robustness
             self._update_encounter_state(robustness)
 
-        return self._obs(), float(reward), terminated, truncated, info
+        return self._obs(), float(total_reward), terminated, truncated, info
 
     def compute_reward(self, action, prev_action):
         state = self.get_state()
@@ -270,12 +279,8 @@ class ColregsGym(McGym):
     # Action masking and decoding
     # ------------------------------------------------------------------
 
-    def get_action_mask(
-        self,
-        situation: str,
-        maneuver_spec: PacSTLEvaluator,
-    ) -> np.ndarray:
-        print("Computing action mask based on pacSTL robustness...")
+    def get_action_mask(self, situation, maneuver_spec):
+        print("Computing action mask...")
         if self.ellipsoids_Ab_dict is None:
             return np.ones(N_DISCRETE_ACTIONS, dtype=bool)
 
@@ -289,36 +294,34 @@ class ColregsGym(McGym):
                 time_step=time_step, A_matrix=A, b_vector=b, center=c
             )
 
+        # Pre-filter: skip actions that violate COLREGS turning direction
+        candidates = []
         for action_idx in range(N_DISCRETE_ACTIONS):
             h_idx = action_idx // len(SPEED_MULTIPLIERS)
-            heading_offset = HEADING_OFFSETS[h_idx]
+            if situation == "crossing" and HEADING_OFFSETS[h_idx] < 0:
+                continue
+            candidates.append(action_idx)
 
-            if situation == "crossing":
-                if heading_offset < 0:
-                    mask[action_idx] = False
-                    continue
-
+        # Batch simulate all candidate trajectories
+        for action_idx in candidates:
             psi_d, u_d = self.decode_discrete_actions(action_idx, obs)
             ego_trajectory = self._simulate_candidate_trajectory(psi_d, u_d)
-
             robustness = maneuver_spec.evaluate(reachable_tube, ego_trajectory)
 
             if hasattr(robustness, 'u'):
-                encounter_resolved = robustness.u < 0
+                mask[action_idx] = robustness.u < 0
             elif hasattr(robustness, '__getitem__'):
                 last_rob = robustness[-1][1] if robustness else None
-                encounter_resolved = (
+                mask[action_idx] = (
                     last_rob is not None
                     and hasattr(last_rob, 'u')
                     and last_rob.u < 0
                 )
             else:
-                encounter_resolved = robustness < 0 if robustness is not None else False
-
-            mask[action_idx] = encounter_resolved
+                mask[action_idx] = robustness < 0 if robustness is not None else False
 
         if not mask.any():
-            for action_idx in range(N_DISCRETE_ACTIONS):
+            for action_idx in candidates:
                 h_idx = action_idx // len(SPEED_MULTIPLIERS)
                 if HEADING_OFFSETS[h_idx] > 0:
                     mask[action_idx] = True
@@ -375,9 +378,10 @@ class ColregsGym(McGym):
         return ego_trajectory
 
     def _update_encounter_state(self, robustness):
-        """Update encounter detection based on pacSTL robustness output."""
         if robustness is None:
             return
+
+        was_active = self._encounter_active
 
         trace_list = robustness[0]
         for _, rob_interval in trace_list:
@@ -386,6 +390,12 @@ class ColregsGym(McGym):
                 if self._active_maneuver_spec is None:
                     from pacstl.core.factory import create as create_spec
                     self._active_maneuver_spec = create_spec("colregs", "crossing_detection")
+                # Force mask recomputation on transition
+                if not was_active:
+                    self._cached_mask = self.get_action_mask(
+                        self.encounter_type, self._active_maneuver_spec
+                    )
+                    self._steps_since_mask_update = 0
                 return
 
         self._encounter_active = False
@@ -406,10 +416,17 @@ class ColregsGym(McGym):
         return psi_d, u_d
 
     def action_masks(self) -> np.ndarray:
-        """Called by MaskablePPO to get the current valid action mask."""
-        if self._encounter_active and self._active_maneuver_spec is not None:
-            return self.get_action_mask(self.encounter_type, self._active_maneuver_spec)
-        return np.ones(N_DISCRETE_ACTIONS, dtype=bool)
+        if not self._encounter_active or self._active_maneuver_spec is None:
+            return np.ones(N_DISCRETE_ACTIONS, dtype=bool)
+
+        self._steps_since_mask_update += 1
+        if self._steps_since_mask_update >= self._mask_recompute_interval:
+            self._cached_mask = self.get_action_mask(
+                self.encounter_type, self._active_maneuver_spec
+            )
+            self._steps_since_mask_update = 0
+
+        return self._cached_mask
 
     # ------------------------------------------------------------------
     # Encounter vessel kinematics

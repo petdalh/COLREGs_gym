@@ -33,7 +33,7 @@ def make_env(dt: float = 0.5) -> ColregsGym:
     spec = create_spec("colregs", "crossing_detection")
     ellipsoids = preload_reachable_sets()
     tube = select_reachable_set(ellipsoids, env.encounter_speed)
-    env.configure_monitoring(spec, tube, sampling_rate=1)
+    env.configure_monitoring(spec, tube, sampling_rate=2)
 
     return env
 
