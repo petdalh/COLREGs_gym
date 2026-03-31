@@ -524,16 +524,6 @@ class ColregsGym(McGym):
         return self._cached_mask
 
     # ------------------------------------------------------------------
-    # Encounter vessel kinematics
-    # ------------------------------------------------------------------
-
-    def _propagate_encounter_vessel(self):
-        n, e, psi = self.encounter_vessel_eta
-        n += self.encounter_speed * np.cos(psi) * self.dt
-        e += self.encounter_speed * np.sin(psi) * self.dt
-        self.encounter_vessel_eta = np.array([n, e, psi])
-
-    # ------------------------------------------------------------------
     # Termination
     # ------------------------------------------------------------------
 
