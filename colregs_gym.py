@@ -11,10 +11,11 @@ from pacstl.common.interfaces import PACReachableSet, TimeStampedState
 from pacstl.domains.colregs.utils import VesselModel
 from pacstl.core.evaluator import PacSTLEvaluator
 from mchorcrux.numpy_core.controllers.adaptive_seakeeping import heading_to_goal, MRACShipController
+from vessel_utils import cross_track_error, to_obstacle_frame, wrap_angle
 
 
 # Discrete action space
-HEADING_OFFSETS = np.deg2rad([-45, -30, -15, 0, 15, 30, 45])
+HEADING_OFFSETS = np.deg2rad([-45, -30, -15, -10, -5, 0, 5, 10, 15, 30, 45])
 SPEED_MULTIPLIERS = np.array([0.0, 0.25, 0.5, 0.75, 1.0])
 N_DISCRETE_ACTIONS = len(HEADING_OFFSETS) * len(SPEED_MULTIPLIERS)
 
@@ -23,7 +24,11 @@ from mchorcrux.numpy_core.controllers.adaptive_seakeeping import MRACShipControl
 
 class ColregsGym(McGym):
     def __init__(self, vessel_model, dt, grid_width, grid_height,
-                 maneuver_horizon=10.0, sim_dt=0.5, **kwargs):
+                 maneuver_horizon=10.0, sim_dt=0.5,
+                 monitoring_radius=None, monitoring_radius_safety_factor=2.0,
+                 robustness_margin=1.0,
+                 w_cte=0.005, cte_clip=5.0,
+                 **kwargs):
         super().__init__(dt=dt, grid_width=grid_width, grid_height=grid_height, **kwargs)
 
         # Override spaces for discrete RL with 10D observation
@@ -55,9 +60,13 @@ class ColregsGym(McGym):
         self._step_count = 0
         self.maneuver_horizon = maneuver_horizon
         self.sim_dt = sim_dt
+        self.w_cte = float(w_cte)
+        self.cte_clip = float(cte_clip)
+        self._nominal_path_start = None
 
         # Controller lives inside the environment now
         self._controller = None
+        self._episode_reward = 0.0
 
         # Encounter detection state for action masking
         self._encounter_active = False
@@ -68,15 +77,80 @@ class ColregsGym(McGym):
         self._mask_recompute_interval = 2
         self._steps_since_mask_update = 0
 
+        # ---- Monitoring radius ----
+        # If not explicitly provided, it will be computed from encounter
+        # parameters in set_encounter() using the formula:
+        #   radius = safety_factor * (v_max_ego + v_target) * maneuver_horizon
+        #
+        # This gives enough lead time for the pacSTL specification to detect
+        # an encounter and for the agent to complete an avoidance maneuver
+        # before the vessels reach closest approach.
+        self._monitoring_radius_override = monitoring_radius
+        self._monitoring_radius_safety_factor = monitoring_radius_safety_factor
+        self.monitoring_radius = monitoring_radius  # set properly in set_encounter
+
+        # ---- Robustness margin for action masking ----
+        # Actions are masked (allowed) when their simulated robustness is
+        # below -margin, meaning they are safely away from violation.
+        # Without a margin (margin=0), masking only kicks in at the boundary
+        # of violation — often too late for the discrete action space to
+        # contain any compliant action. A margin of ~2.0 gives early warning:
+        # the agent is steered away from encounters while there are still
+        # multiple viable actions available.
+        #
+        # The magnitude is relative to the pacSTL robustness scale. From
+        # the pacSTL paper Table II, encounter robustness lower bounds are
+        # typically -15 to -25, and upper bounds ~0.1 to 1.3 at trigger time.
+        # A margin of 2.0 means "mask out actions that bring robustness
+        # within 2.0 of zero", which is conservative but safe.
+        self.robustness_margin = robustness_margin
+
     # ------------------------------------------------------------------
     # Configuration
     # ------------------------------------------------------------------
+
+    def _compute_monitoring_radius(self, target_speed: float) -> float:
+        """Derive a monitoring radius from vessel speeds and maneuver horizon.
+
+        The radius must satisfy:
+            radius > (v_ego_max + v_target) * (T_maneuver + T_prediction)
+
+        so that the pacSTL evaluator has time to:
+          1. detect the encounter (prediction horizon covers future risk), and
+          2. the agent has room to execute a full avoidance maneuver.
+
+        The safety factor (default 2.0) adds margin for:
+          - non-straight approach geometries (crossing angles reduce closing
+            rate compared to head-on)
+          - decision interval delays (agent acts every N sub-steps)
+          - ellipsoid prediction horizon (must overlap with encounter geometry)
+        """
+        max_closing_speed = self.v_max + target_speed
+
+        # Prediction horizon: max time key in ellipsoid dict, or fallback
+        if self.ellipsoids_Ab_dict is not None and len(self.ellipsoids_Ab_dict) > 0:
+            t_prediction = max(self.ellipsoids_Ab_dict.keys())
+        else:
+            t_prediction = 2.5  # default from pacSTL paper
+
+        t_total = self.maneuver_horizon + t_prediction
+        radius = self._monitoring_radius_safety_factor * max_closing_speed * t_total
+
+        return radius
 
     def configure_monitoring(self, spec, ellipsoids_Ab_dict, sampling_rate: int = 10):
         """Attach a pacSTL evaluator and preloaded reachable sets."""
         self.spec = spec
         self.ellipsoids_Ab_dict = ellipsoids_Ab_dict
         self.robustness_sampling_rate = sampling_rate
+
+        # Recompute monitoring radius now that we have the ellipsoid time keys
+        if self._monitoring_radius_override is None and self.encounter_speed > 0:
+            self.monitoring_radius = self._compute_monitoring_radius(self.encounter_speed)
+            print(f"[MonitoringRadius] Auto-computed: {self.monitoring_radius:.1f} m "
+                  f"(v_max={self.v_max:.2f}, v_target={self.encounter_speed:.2f}, "
+                  f"T_maneuver={self.maneuver_horizon:.1f}, "
+                  f"safety_factor={self._monitoring_radius_safety_factor})")
 
     def set_encounter(
         self,
@@ -103,6 +177,7 @@ class ColregsGym(McGym):
 
         own_n, own_e, own_psi_deg = start_position
         own_psi_rad = np.deg2rad(own_psi_deg)
+        self._nominal_path_start = np.array([own_n, own_e], dtype=float)
 
         if encounter_type == "crossing":
             bearing_rad = own_psi_rad + np.deg2rad(45.0)
@@ -121,12 +196,42 @@ class ColregsGym(McGym):
         goal_n = own_n + goal_ahead_distance * np.cos(own_psi_rad)
         goal_e = own_e + goal_ahead_distance * np.sin(own_psi_rad)
 
+        # Compute monitoring radius from encounter parameters
+        if self._monitoring_radius_override is not None:
+            self.monitoring_radius = self._monitoring_radius_override
+            print(f"[MonitoringRadius] Using override: {self.monitoring_radius:.1f} m")
+        else:
+            self.monitoring_radius = self._compute_monitoring_radius(target_speed)
+            print(f"[MonitoringRadius] Auto-computed: {self.monitoring_radius:.1f} m "
+                  f"(v_max={self.v_max:.2f}, v_target={target_speed:.2f}, "
+                  f"T_maneuver={self.maneuver_horizon:.1f}, "
+                  f"safety_factor={self._monitoring_radius_safety_factor})")
+
         self.set_task(
             start_position=start_position,
             goal=(goal_n, goal_e, 1.0),
             wave_conditions=wave_conditions,
             simtime=simtime,
         )
+
+    # ------------------------------------------------------------------
+    # Monitoring radius check
+    # ------------------------------------------------------------------
+
+    def _within_monitoring_radius(self) -> bool:
+        """Check if the encounter vessel is within monitoring range."""
+        if self.encounter_vessel_eta is None:
+            return False
+        if self.monitoring_radius is None:
+            return True  # no radius configured -> always monitor
+
+        state = self.get_state()
+        eta = state["eta"]
+        dist = np.hypot(
+            eta[0] - self.encounter_vessel_eta[0],
+            eta[1] - self.encounter_vessel_eta[1],
+        )
+        return dist <= self.monitoring_radius
 
     # ------------------------------------------------------------------
     # Gym interface
@@ -144,6 +249,19 @@ class ColregsGym(McGym):
         self._encounter_active = False
         self._active_maneuver_spec = None
         self._controller = MRACShipController(dt=self.dt)
+        self._episode_reward = 0.0
+
+        # Store history for visualization
+        self.history_ego = []
+        self.history_enc = []
+        self.history_rob = []
+        self.history_in_radius = []  # track when monitoring was active
+        
+        # Record starting positions
+        self.history_ego.append([state["eta"][0], state["eta"][1]])
+        if self.encounter_vessel_eta is not None:
+            self.history_enc.append([self.encounter_vessel_eta[0], self.encounter_vessel_eta[1]])
+
         return self._obs(), {}
 
     def step(self, action: int):
@@ -153,9 +271,30 @@ class ColregsGym(McGym):
         if self._step_count % 100 == 0:
             print(f"Step {self._step_count}")
 
+        terminated = False
+        truncated = False
+        info = {}
+
         for _ in range(decision_interval):
             if self.encounter_vessel_eta is not None:
                 self._propagate_encounter_vessel()
+
+            # Check for divergence BEFORE computing obs/controller.
+            # A state that is finite in float64 but overflows float32
+            # will corrupt the observation, controller input, and torques.
+            state = self.get_state()
+            if not np.all(np.isfinite(state["eta"])) or not np.all(np.isfinite(state["nu"])):
+                print(f"[Divergence] Non-finite state at step {self._step_count}")
+                terminated = True
+                info = {"reason": "diverged"}
+                break
+
+            # Also catch states that are finite but too large for float32
+            if np.any(np.abs(state["eta"][:2]) > 1e6) or np.any(np.abs(state["nu"]) > 1e6):
+                print(f"[Divergence] State magnitude too large at step {self._step_count}")
+                terminated = True
+                info = {"reason": "diverged"}
+                break
 
             obs = self._obs()
             psi_d, u_d = self.decode_discrete_actions(action, obs)
@@ -165,24 +304,53 @@ class ColregsGym(McGym):
             self._step_count += 1
             total_reward += reward
 
+            # Record positions
+            state = self.get_state()
+            self.history_ego.append([state["eta"][0], state["eta"][1]])
+            if self.encounter_vessel_eta is not None:
+                self.history_enc.append([self.encounter_vessel_eta[0], self.encounter_vessel_eta[1]])
+
             if terminated or truncated:
                 break
 
-        # pacSTL evaluation once per decision step, not once per env step
+        # pacSTL evaluation — only if within monitoring radius
+        robustness = None
+        in_radius = self._within_monitoring_radius()
+
         if self._step_count % self.robustness_sampling_rate == 0:
-            robustness = self.evaluate_robustness()
-            info["robustness"] = robustness
-            self._update_encounter_state(robustness)
+            if in_radius:
+                robustness = self.evaluate_robustness()
+                info["robustness"] = robustness
+                self._update_encounter_state(robustness)
+            else:
+                # Outside monitoring radius: clear any active encounter state
+                if self._encounter_active:
+                    self._encounter_active = False
+                    self._active_maneuver_spec = None
+                    self._cached_mask = np.ones(N_DISCRETE_ACTIONS, dtype=bool)
+
+        # Record robustness and radius status
+        self.history_rob.append(robustness)
+        self.history_in_radius.append(in_radius)
+
+        self._episode_reward += float(total_reward)
+        if terminated or truncated:
+            reason = info.get("reason", "goal_reached") 
+            status = "Terminated" if terminated else "Truncated"
+            print(f"--- Episode {status} | Reason: {reason} | Reward: {self._episode_reward:.2f} ---")
 
         return self._obs(), float(total_reward), terminated, truncated, info
 
     def compute_reward(self, action, prev_action):
         state = self.get_state()
+        pos_xy = state["eta"][:2]
         gn, ge = self.goal[:2]
-        dist = np.hypot(gn - state["eta"][0], ge - state["eta"][1])
+        dist = np.hypot(gn - pos_xy[0], ge - pos_xy[1])
         progress = self.prev_dist_to_goal - dist
         self.prev_dist_to_goal = dist
-        return progress
+        cte = cross_track_error(pos_xy, self._nominal_path_start, self.goal[:2])
+        cte_penalty = self.w_cte * min(abs(cte), self.cte_clip)
+        return progress - cte_penalty
 
     # ------------------------------------------------------------------
     # Observation
@@ -197,7 +365,15 @@ class ColregsGym(McGym):
             if self.encounter_vessel_eta is not None
             else np.zeros(2)
         )
-        return np.concatenate([eta[:2], [eta[-1]], nu, [gn, ge], tgt]).astype(np.float32)
+        obs = np.concatenate([eta[:2], [eta[-1]], nu, [gn, ge], tgt])
+
+        # Guard against simulation divergence: replace non-finite values
+        # with zeros and clamp to float32 range. This prevents NaN from
+        # propagating into the policy network and crashing MaskablePPO.
+        if not np.all(np.isfinite(obs)):
+            obs = np.nan_to_num(obs, nan=0.0, posinf=1e6, neginf=-1e6)
+
+        return obs.astype(np.float32)
 
     # ------------------------------------------------------------------
     # pacSTL monitoring
@@ -238,26 +414,19 @@ class ColregsGym(McGym):
             pred_obs_n = obs_n + obs_vn * time_step
             pred_obs_e = obs_e + obs_ve * time_step
 
-            # Transform ego into obstacle's local frame 
-            # Translate (obstacle at origin)
-            dn = ego_n - pred_obs_n
-            de = ego_e - pred_obs_e
-
-            angle = obs_psi + np.pi
-            cos_o = np.cos(angle)
-            sin_o = np.sin(angle)
-            local_x = cos_o * dn - sin_o * de
-            local_y = sin_o * dn + cos_o * de
+            local_pos, local_vel = to_obstacle_frame(
+                ego_pos=np.array([ego_n, ego_e]),
+                ego_vel=np.array([ego_vn, ego_ve]),
+                obs_pos=np.array([pred_obs_n, pred_obs_e]),
+                obs_psi=obs_psi,
+                obs_vel=np.array([obs_vn, obs_ve]),
+            )
+            local_x, local_y = local_pos
 
             # Relative heading (same as original)
-            psi_rel = - _wrap_angle(psi_ego - obs_psi)
-
-            # Transform velocities with the same rotation
-            dvn = ego_vn - obs_vn
-            dve = ego_ve - obs_ve
-            local_vx = cos_o * dvn - sin_o * dve
-            local_vy = sin_o * dvn + cos_o * dve
-            speed = np.sqrt(local_vx**2 + local_vy**2)
+            psi_rel = -wrap_angle(psi_ego - obs_psi)
+            local_vx, local_vy = local_vel
+            speed = np.hypot(local_vx, local_vy)
 
             # 6D state in obstacle-relative frame:
             # [p_x, p_y, psi_rel, v_x, v_y, |v|]
@@ -284,8 +453,15 @@ class ColregsGym(McGym):
         if self.ellipsoids_Ab_dict is None:
             return np.ones(N_DISCRETE_ACTIONS, dtype=bool)
 
+        # Skip mask computation if outside monitoring radius
+        if not self._within_monitoring_radius():
+            return np.ones(N_DISCRETE_ACTIONS, dtype=bool)
+
         obs = self._obs()
         mask = np.zeros(N_DISCRETE_ACTIONS, dtype=bool)
+
+        # Track robustness per action for ranked fallback
+        action_robustness = np.full(N_DISCRETE_ACTIONS, np.inf)
 
         reachable_tube = {}
         for time_step, raw_tuple in self.ellipsoids_Ab_dict.items():
@@ -302,80 +478,154 @@ class ColregsGym(McGym):
                 continue
             candidates.append(action_idx)
 
-        # Batch simulate all candidate trajectories
+        # Evaluate each candidate action
         for action_idx in candidates:
             psi_d, u_d = self.decode_discrete_actions(action_idx, obs)
             ego_trajectory = self._simulate_candidate_trajectory(psi_d, u_d)
             robustness = maneuver_spec.evaluate(reachable_tube, ego_trajectory)
 
-            if hasattr(robustness, 'u'):
-                mask[action_idx] = robustness.u < 0
-            elif hasattr(robustness, '__getitem__'):
-                last_rob = robustness[-1][1] if robustness else None
-                mask[action_idx] = (
-                    last_rob is not None
-                    and hasattr(last_rob, 'u')
-                    and last_rob.u < 0
-                )
-            else:
-                mask[action_idx] = robustness < 0 if robustness is not None else False
+            # Extract the upper bound of the robustness interval
+            rob_upper = self._extract_robustness_upper(robustness)
 
+            if rob_upper is not None:
+                action_robustness[action_idx] = rob_upper
+                # Allow action if its robustness upper bound is safely below
+                # the margin. Negative robustness = no encounter detected.
+                # The margin pushes the threshold below zero so the agent
+                # avoids actions that are *close to* triggering an encounter.
+                mask[action_idx] = rob_upper < -self.robustness_margin
+
+        # Fallback: if no action passes the margin, allow the least-bad ones.
+        # This prevents the all-zeros mask that crashes MaskablePPO.
         if not mask.any():
-            for action_idx in candidates:
-                h_idx = action_idx // len(SPEED_MULTIPLIERS)
-                if HEADING_OFFSETS[h_idx] > 0:
-                    mask[action_idx] = True
+            # Only consider COLREGS-directional candidates
+            candidate_rob = {idx: action_robustness[idx] for idx in candidates
+                            if np.isfinite(action_robustness[idx])}
+
+            if candidate_rob:
+                # Pick actions with the lowest (most negative) robustness —
+                # these are furthest from violation
+                min_rob = min(candidate_rob.values())
+                # Allow all actions within 1.0 of the best available
+                for idx, rob in candidate_rob.items():
+                    if rob <= min_rob + 1.0:
+                        mask[idx] = True
+
+                print(f"[ActionMask] Fallback: {mask.sum()} actions allowed "
+                      f"(best robustness={min_rob:.2f})")
+            else:
+                # Absolute last resort: allow all starboard turns
+                for action_idx in candidates:
+                    h_idx = action_idx // len(SPEED_MULTIPLIERS)
+                    if HEADING_OFFSETS[h_idx] > 0:
+                        mask[action_idx] = True
+                print(f"[ActionMask] Emergency fallback: starboard turns only")
 
         return mask
+
+    @staticmethod
+    def _extract_robustness_upper(robustness) -> float:
+        """Extract the upper bound from a pacSTL robustness result.
+
+        The evaluator returns different formats depending on the spec
+        structure. This normalizes them all to a single float (or None).
+        """
+        if robustness is None:
+            return None
+
+        # Direct interval object with .u attribute
+        if hasattr(robustness, 'u'):
+            return float(robustness.u)
+
+        # List of (time, interval) tuples — take the worst (max) upper bound
+        if hasattr(robustness, '__getitem__'):
+            try:
+                # robustness is [(trace_list)] or similar nested structure
+                if len(robustness) > 0:
+                    trace = robustness[0] if isinstance(robustness[0], list) else robustness
+                    max_u = -np.inf
+                    for item in trace:
+                        if hasattr(item, '__getitem__') and len(item) >= 2:
+                            _, rob_interval = item[0], item[1]
+                            if hasattr(rob_interval, 'u'):
+                                max_u = max(max_u, float(rob_interval.u))
+                        elif hasattr(item, 'u'):
+                            max_u = max(max_u, float(item.u))
+                    if np.isfinite(max_u):
+                        return max_u
+            except (IndexError, TypeError):
+                pass
+
+        # Bare numeric
+        try:
+            return float(robustness)
+        except (TypeError, ValueError):
+            return None
     
     def _simulate_candidate_trajectory(self, psi_d: float, u_d: float) -> dict:
-        state = self.get_state()
-        eta, nu = state["eta"], state["nu"]
-        px, py = eta[0], eta[1]
-        psi = eta[-1]
-        u = nu[0]
+            state = self.get_state()
+            eta, nu = state["eta"], state["nu"]
+            px, py = eta[0], eta[1]
+            psi = eta[-1]
+            u = nu[0]
 
-        k_heading = 1.0
-        k_speed = 0.5
-        omega_max = self.r_max
-        a_max = 0.1
+            # Get target info for relative transformation
+            obs_n, obs_e, obs_psi = self.encounter_vessel_eta
+            obs_vn = self.encounter_speed * np.cos(obs_psi)
+            obs_ve = self.encounter_speed * np.sin(obs_psi)
 
-        tube_time_steps = sorted(self.ellipsoids_Ab_dict.keys())
-        
-        ego_trajectory = {}
-        t = 0.0
-        tube_idx = 0
+            k_heading = 1.0
+            k_speed = 0.5
+            omega_max = self.r_max
+            a_max = 0.1
 
-        while tube_idx < len(tube_time_steps):
-            target_t = tube_time_steps[tube_idx]
-            while t < target_t - 1e-9:
-                dt_step = min(self.sim_dt, target_t - t)
-                heading_error = _wrap_angle(psi_d - psi)
-                omega = np.clip(k_heading * heading_error, -omega_max, omega_max)
-                speed_error = u_d - u
-                a = np.clip(k_speed * speed_error, -a_max, a_max)
+            tube_time_steps = sorted(self.ellipsoids_Ab_dict.keys())
+            ego_trajectory = {}
+            t = 0.0
+            
+            for target_t in tube_time_steps:
+                while t < target_t - 1e-9:
+                    dt_step = min(self.sim_dt, target_t - t)
+                    heading_error = wrap_angle(psi_d - psi)
+                    omega = np.clip(k_heading * heading_error, -omega_max, omega_max)
+                    speed_error = u_d - u
+                    a = np.clip(k_speed * speed_error, -a_max, a_max)
 
-                px += np.cos(psi) * u * dt_step
-                py += np.sin(psi) * u * dt_step
-                psi += omega * dt_step
-                u += a * dt_step
-                u = np.clip(u, 0.0, self.v_max)
-                t += dt_step
-        
-            # World-frame velocities at this predicted state
-            vn = u * np.cos(psi)
-            ve = u * np.sin(psi)
- 
-            # Build the 6D state vector matching the evaluator's expectation:
-            # [px, py, psi, vn, ve, 0.0]
-            state_array = np.array([px, py, psi, vn, ve, 0.0])
- 
-            ego_trajectory[target_t] = TimeStampedState(
-                time_step=target_t, state_array=state_array
-            )
-            tube_idx += 1
- 
-        return ego_trajectory
+                    px += np.cos(psi) * u * dt_step
+                    py += np.sin(psi) * u * dt_step
+                    psi += omega * dt_step
+                    u += a * dt_step
+                    u = np.clip(u, 0.0, self.v_max)
+                    t += dt_step
+            
+                # World-frame velocities at this predicted state
+                vn = u * np.cos(psi)
+                ve = u * np.sin(psi)
+
+                # --- Transform to Target's Relative Frame ---
+                pred_obs_n = obs_n + obs_vn * target_t
+                pred_obs_e = obs_e + obs_ve * target_t
+
+                local_pos, local_vel = to_obstacle_frame(
+                    ego_pos=np.array([px, py]),
+                    ego_vel=np.array([vn, ve]),
+                    obs_pos=np.array([pred_obs_n, pred_obs_e]),
+                    obs_psi=obs_psi,
+                    obs_vel=np.array([obs_vn, obs_ve]),
+                )
+                local_x, local_y = local_pos
+
+                psi_rel = -wrap_angle(psi - obs_psi)
+                local_vx, local_vy = local_vel
+                speed = np.hypot(local_vx, local_vy)
+    
+                state_array = np.array([local_x, local_y, psi_rel, local_vx, local_vy, speed])
+    
+                ego_trajectory[target_t] = TimeStampedState(
+                    time_step=target_t, state_array=state_array
+                )
+    
+            return ego_trajectory
 
     def _update_encounter_state(self, robustness):
         if robustness is None:
@@ -385,13 +635,19 @@ class ColregsGym(McGym):
 
         trace_list = robustness[0]
         for _, rob_interval in trace_list:
-            if rob_interval.u > 0:
+            # Activate encounter when the upper robustness bound approaches
+            # zero (within the margin). This triggers masking BEFORE the
+            # robustness actually becomes positive, giving the agent time
+            # to maneuver while compliant actions still exist.
+            if rob_interval.u > -self.robustness_margin:
                 self._encounter_active = True
                 if self._active_maneuver_spec is None:
                     from pacstl.core.factory import create as create_spec
                     self._active_maneuver_spec = create_spec("colregs", "crossing_detection")
                 # Force mask recomputation on transition
                 if not was_active:
+                    print(f"[Encounter] Activated (rob_upper={rob_interval.u:.2f}, "
+                          f"margin={self.robustness_margin:.1f})")
                     self._cached_mask = self.get_action_mask(
                         self.encounter_type, self._active_maneuver_spec
                     )
@@ -418,6 +674,13 @@ class ColregsGym(McGym):
     def action_masks(self) -> np.ndarray:
         if not self._encounter_active or self._active_maneuver_spec is None:
             return np.ones(N_DISCRETE_ACTIONS, dtype=bool)
+
+        # If vessel left monitoring radius, deactivate encounter
+        if not self._within_monitoring_radius():
+            self._encounter_active = False
+            self._active_maneuver_spec = None
+            self._cached_mask = np.ones(N_DISCRETE_ACTIONS, dtype=bool)
+            return self._cached_mask
 
         self._steps_since_mask_update += 1
         if self._steps_since_mask_update >= self._mask_recompute_interval:
@@ -447,6 +710,25 @@ class ColregsGym(McGym):
         if terminated or truncated:
             return terminated, truncated, info
 
+        # Detect simulation divergence: if the state has blown up, the
+        # dynamics have gone unstable (e.g. large dt, extreme controller
+        # output). Terminate early rather than feeding NaN/inf to the policy.
+        if not np.all(np.isfinite(boat_pos)):
+            print("[Termination] State diverged (non-finite position)")
+            return True, False, {"reason": "diverged"}
+
+        state = self.get_state()
+        if not np.all(np.isfinite(state["nu"])):
+            print("[Termination] State diverged (non-finite velocity)")
+            return True, False, {"reason": "diverged"}
+
+        # Also catch states that are finite but absurdly large — the vessel
+        # has left the grid and the simulation is meaningless.
+        max_pos = max(self.grid_width, self.grid_height) * 2
+        if np.abs(boat_pos[0]) > max_pos or np.abs(boat_pos[1]) > max_pos:
+            print(f"[Termination] Vessel far outside grid: pos=({boat_pos[0]:.1f}, {boat_pos[1]:.1f})")
+            return True, False, {"reason": "out_of_bounds"}
+
         if self.encounter_max_time and self.curr_sim_time > self.encounter_max_time:
             return False, True, {"reason": "time_limit"}
 
@@ -459,8 +741,3 @@ class ColregsGym(McGym):
                 return True, False, {"reason": "collision"}
 
         return False, False, {}
-
-
-def _wrap_angle(angle: float) -> float:
-    """Wrap angle to [-π, π]."""
-    return (angle + np.pi) % (2 * np.pi) - np.pi
