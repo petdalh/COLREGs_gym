@@ -49,34 +49,6 @@ def cross_track_error(
     y_e = -(x - x1) * np.sin(pi_h) + (y - y1) * np.cos(pi_h)
     return float(y_e)
     
-def compute_monitoring_radius(v_max: float, maneuver_horizon: float, ellipsoids_Ab_dict: dict | None, target_speed: float, monitoring_radius_safety_factor: float) -> float:
-    """Derive a monitoring radius from vessel speeds and maneuver horizon.
-
-    The radius must satisfy:
-        radius > (v_ego_max + v_target) * (T_maneuver + T_prediction)
-
-    so that the pacSTL evaluator has time to:
-        1. detect the encounter (prediction horizon covers future risk), and
-        2. the agent has room to execute a full avoidance maneuver.
-
-    The safety factor (default 2.0) adds margin for:
-        - non-straight approach geometries (crossing angles reduce closing
-        rate compared to head-on)
-        - decision interval delays (agent acts every N sub-steps)
-        - ellipsoid prediction horizon (must overlap with encounter geometry)
-    """
-    max_closing_speed = v_max + target_speed
-
-    # Prediction horizon: max time key in ellipsoid dict, or fallback
-    if ellipsoids_Ab_dict is not None and len(ellipsoids_Ab_dict) > 0:
-        t_prediction = max(ellipsoids_Ab_dict.keys())
-    else:
-        t_prediction = 2.5  # default from pacSTL paper
-
-    t_total = maneuver_horizon + t_prediction
-    radius = monitoring_radius_safety_factor * max_closing_speed * t_total
-
-    return radius
 
 def within_monitoring_radius(encounter_vessel_eta: np.ndarray, monitoring_radius: float, state: dict) -> bool:
     """Check if the encounter vessel is within monitoring range."""

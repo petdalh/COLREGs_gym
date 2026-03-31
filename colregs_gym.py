@@ -141,25 +141,6 @@ class ColregsGym(McGym):
         self.robustness_sampling_rate = sampling_rate
 
     # ------------------------------------------------------------------
-    # Monitoring radius check
-    # ------------------------------------------------------------------
-
-    def _within_monitoring_radius(self) -> bool:
-        """Check if the encounter vessel is within monitoring range."""
-        if self.encounter_vessel_eta is None:
-            return False
-        if self.monitoring_radius is None:
-            return True  # no radius configured -> always monitor
-
-        state = self.get_state()
-        eta = state["eta"]
-        dist = np.hypot(
-            eta[0] - self.encounter_vessel_eta[0],
-            eta[1] - self.encounter_vessel_eta[1],
-        )
-        return dist <= self.monitoring_radius
-
-    # ------------------------------------------------------------------
     # Gym interface
     # ------------------------------------------------------------------
 
@@ -286,7 +267,7 @@ class ColregsGym(McGym):
         progress = self.prev_dist_to_goal - dist
         self.prev_dist_to_goal = dist
         cte = cross_track_error(pos_xy, self._nominal_path_start, self.goal[:2])
-        if not self._within_monitoring_radius(): 
+        if not within_monitoring_radius(self.encounter_vessel_eta, self.monitoring_radius, self.get_state()): 
             cte_penalty = self.w_cte * min(abs(cte), self.cte_clip)
             return progress - cte_penalty
         else:
