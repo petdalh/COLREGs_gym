@@ -11,7 +11,7 @@ from pacstl.common.interfaces import PACReachableSet, TimeStampedState
 from pacstl.domains.colregs.utils import VesselModel
 from pacstl.core.evaluator import PacSTLEvaluator
 from mchorcrux.numpy_core.controllers.adaptive_seakeeping import heading_to_goal, MRACShipController
-from vessel_utils import cross_track_error, to_obstacle_frame, wrap_angle
+from vessel_utils import cross_track_error, to_obstacle_frame, wrap_angle, compute_monitoring_radius, within_monitoring_radius
 
 
 # Discrete action space
@@ -109,35 +109,6 @@ class ColregsGym(McGym):
     # Configuration
     # ------------------------------------------------------------------
 
-    def _compute_monitoring_radius(self, target_speed: float) -> float:
-        """Derive a monitoring radius from vessel speeds and maneuver horizon.
-
-        The radius must satisfy:
-            radius > (v_ego_max + v_target) * (T_maneuver + T_prediction)
-
-        so that the pacSTL evaluator has time to:
-          1. detect the encounter (prediction horizon covers future risk), and
-          2. the agent has room to execute a full avoidance maneuver.
-
-        The safety factor (default 2.0) adds margin for:
-          - non-straight approach geometries (crossing angles reduce closing
-            rate compared to head-on)
-          - decision interval delays (agent acts every N sub-steps)
-          - ellipsoid prediction horizon (must overlap with encounter geometry)
-        """
-        max_closing_speed = self.v_max + target_speed
-
-        # Prediction horizon: max time key in ellipsoid dict, or fallback
-        if self.ellipsoids_Ab_dict is not None and len(self.ellipsoids_Ab_dict) > 0:
-            t_prediction = max(self.ellipsoids_Ab_dict.keys())
-        else:
-            t_prediction = 2.5  # default from pacSTL paper
-
-        t_total = self.maneuver_horizon + t_prediction
-        radius = self._monitoring_radius_safety_factor * max_closing_speed * t_total
-
-        return radius
-
     def configure_monitoring(self, spec, ellipsoids_Ab_dict, sampling_rate: int = 10):
         """Attach a pacSTL evaluator and preloaded reachable sets."""
         self.spec = spec
@@ -146,7 +117,13 @@ class ColregsGym(McGym):
 
         # Recompute monitoring radius now that we have the ellipsoid time keys
         if self._monitoring_radius_override is None and self.encounter_speed > 0:
-            self.monitoring_radius = self._compute_monitoring_radius(self.encounter_speed)
+            self.monitoring_radius = compute_monitoring_radius(
+                v_max=self.v_max,
+                maneuver_horizon=self.maneuver_horizon,
+                ellipsoids_Ab_dict=self.ellipsoids_Ab_dict,
+                target_speed=self.encounter_speed,
+                monitoring_radius_safety_factor=self._monitoring_radius_safety_factor,
+            )
             print(f"[MonitoringRadius] Auto-computed: {self.monitoring_radius:.1f} m "
                   f"(v_max={self.v_max:.2f}, v_target={self.encounter_speed:.2f}, "
                   f"T_maneuver={self.maneuver_horizon:.1f}, "
@@ -201,7 +178,13 @@ class ColregsGym(McGym):
             self.monitoring_radius = self._monitoring_radius_override
             print(f"[MonitoringRadius] Using override: {self.monitoring_radius:.1f} m")
         else:
-            self.monitoring_radius = self._compute_monitoring_radius(target_speed)
+            self.monitoring_radius = compute_monitoring_radius(
+                v_max=self.v_max,
+                maneuver_horizon=self.maneuver_horizon,
+                ellipsoids_Ab_dict=self.ellipsoids_Ab_dict,
+                target_speed=self.encounter_speed,
+                monitoring_radius_safety_factor=self._monitoring_radius_safety_factor,
+            )
             print(f"[MonitoringRadius] Auto-computed: {self.monitoring_radius:.1f} m "
                   f"(v_max={self.v_max:.2f}, v_target={target_speed:.2f}, "
                   f"T_maneuver={self.maneuver_horizon:.1f}, "
@@ -275,7 +258,7 @@ class ColregsGym(McGym):
         truncated = False
         info = {}
 
-        for _ in range(decision_interval):
+        for sub in range(decision_interval):
             if self.encounter_vessel_eta is not None:
                 self._propagate_encounter_vessel()
 
@@ -289,6 +272,10 @@ class ColregsGym(McGym):
                 info = {"reason": "diverged"}
                 break
 
+            obs = self._obs()
+            psi_d, u_d = self.decode_discrete_actions(action, obs)
+            tau = self._controller.compute_action_minimal(self.get_state(), psi_d, u_d)
+
             # Also catch states that are finite but too large for float32
             if np.any(np.abs(state["eta"][:2]) > 1e6) or np.any(np.abs(state["nu"]) > 1e6):
                 print(f"[Divergence] State magnitude too large at step {self._step_count}")
@@ -296,9 +283,6 @@ class ColregsGym(McGym):
                 info = {"reason": "diverged"}
                 break
 
-            obs = self._obs()
-            psi_d, u_d = self.decode_discrete_actions(action, obs)
-            tau = self._controller.compute_action_minimal(self.get_state(), psi_d, u_d)
 
             _, reward, terminated, truncated, info = super().step(tau)
             self._step_count += 1
@@ -315,7 +299,7 @@ class ColregsGym(McGym):
 
         # pacSTL evaluation — only if within monitoring radius
         robustness = None
-        in_radius = self._within_monitoring_radius()
+        in_radius = within_monitoring_radius(self.encounter_vessel_eta, self.monitoring_radius, self.get_state())
 
         if self._step_count % self.robustness_sampling_rate == 0:
             if in_radius:
@@ -454,7 +438,7 @@ class ColregsGym(McGym):
             return np.ones(N_DISCRETE_ACTIONS, dtype=bool)
 
         # Skip mask computation if outside monitoring radius
-        if not self._within_monitoring_radius():
+        if not within_monitoring_radius(self.encounter_vessel_eta, self.monitoring_radius, self.get_state()):
             return np.ones(N_DISCRETE_ACTIONS, dtype=bool)
 
         obs = self._obs()
@@ -676,7 +660,7 @@ class ColregsGym(McGym):
             return np.ones(N_DISCRETE_ACTIONS, dtype=bool)
 
         # If vessel left monitoring radius, deactivate encounter
-        if not self._within_monitoring_radius():
+        if not within_monitoring_radius(self.encounter_vessel_eta, self.monitoring_radius, self.get_state()):
             self._encounter_active = False
             self._active_maneuver_spec = None
             self._cached_mask = np.ones(N_DISCRETE_ACTIONS, dtype=bool)
@@ -724,7 +708,7 @@ class ColregsGym(McGym):
 
         # Also catch states that are finite but absurdly large — the vessel
         # has left the grid and the simulation is meaningless.
-        max_pos = max(self.grid_width, self.grid_height) * 2
+        max_pos = max(self.grid_width, self.grid_height) * 4
         if np.abs(boat_pos[0]) > max_pos or np.abs(boat_pos[1]) > max_pos:
             print(f"[Termination] Vessel far outside grid: pos=({boat_pos[0]:.1f}, {boat_pos[1]:.1f})")
             return True, False, {"reason": "out_of_bounds"}
