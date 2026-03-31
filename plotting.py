@@ -81,8 +81,9 @@ def plot_episode_trajectory(
     ax.set_aspect("equal")
 
     if save_path:
-        fig.savefig(save_path, format="pdf", bbox_inches="tight")
-    plt.show()
+        fig.savefig(save_path, format="png", bbox_inches="tight")
+    else:
+        plt.show()
 
 
 def plot_robustness(
@@ -135,5 +136,6 @@ def plot_robustness(
     fig.set_figheight(2.0)
 
     if save_path:
-        fig.savefig(save_path, format="pdf")
-    plt.show()
+        fig.savefig(save_path, format="png")
+    else:
+        plt.show()
