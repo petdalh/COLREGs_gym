@@ -7,7 +7,6 @@ for the robustness calculation to be meaningful and well-conditioned.
 """
 
 import argparse
-import numpy as np
 import os
 from sb3_contrib import MaskablePPO
 from pacstl.core.factory import create as create_spec
