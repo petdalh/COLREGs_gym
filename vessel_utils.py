@@ -91,3 +91,9 @@ def within_monitoring_radius(encounter_vessel_eta: np.ndarray, monitoring_radius
         eta[1] - encounter_vessel_eta[1],
     )
     return dist <= monitoring_radius
+
+def propagate_vessel(vessel_eta: np.ndarray, encounter_speed: float, dt: float) -> np.ndarray:
+    n, e, psi = vessel_eta
+    n += encounter_speed * np.cos(psi) * dt
+    e += encounter_speed * np.sin(psi) * dt
+    return np.array([n, e, psi])

@@ -9,7 +9,7 @@ import numpy as np
 from mchorcrux.numpy_core.gym.mc_gym_csad_numpy import McGym
 from pacstl.common.interfaces import PACReachableSet, TimeStampedState
 from mchorcrux.numpy_core.controllers.adaptive_seakeeping import heading_to_goal, MRACShipController
-from vessel_utils import cross_track_error, to_obstacle_frame, wrap_angle, compute_monitoring_radius, within_monitoring_radius
+from vessel_utils import cross_track_error, to_obstacle_frame, wrap_angle, within_monitoring_radius, propagate_vessel
 from robustness_utils import evaluate_robustness, extract_robustness_upper
 
 
@@ -203,7 +203,11 @@ class ColregsGym(McGym):
 
         for sub in range(decision_interval):
             if self.encounter_vessel_eta is not None:
-                self._propagate_encounter_vessel()
+                self.encounter_vessel_eta = propagate_vessel(
+                    vessel_eta=self.encounter_vessel_eta,
+                    encounter_speed=self.encounter_speed,
+                    dt=self.dt
+                )
 
             # Check for divergence BEFORE computing obs/controller.
             # A state that is finite in float64 but overflows float32
