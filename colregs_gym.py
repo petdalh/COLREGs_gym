@@ -24,7 +24,7 @@ from mchorcrux.numpy_core.controllers.adaptive_seakeeping import MRACShipControl
 class ColregsGym(McGym):
     def __init__(self, vessel_model, dt, grid_width, grid_height,
                  maneuver_horizon=10.0, sim_dt=0.5,
-                 monitoring_radius=None, monitoring_radius_safety_factor=2.0,
+                 monitoring_radius=14.0, monitoring_radius_safety_factor=2.0,
                  robustness_margin=1.0,
                  w_cte=0.005, cte_clip=5.0,
                  **kwargs):
@@ -76,57 +76,12 @@ class ColregsGym(McGym):
         self._mask_recompute_interval = 2
         self._steps_since_mask_update = 0
 
-        # ---- Monitoring radius ----
-        # If not explicitly provided, it will be computed from encounter
-        # parameters in set_encounter() using the formula:
-        #   radius = safety_factor * (v_max_ego + v_target) * maneuver_horizon
-        #
-        # This gives enough lead time for the pacSTL specification to detect
-        # an encounter and for the agent to complete an avoidance maneuver
-        # before the vessels reach closest approach.
-        self._monitoring_radius_override = monitoring_radius
-        self._monitoring_radius_safety_factor = monitoring_radius_safety_factor
-        self.monitoring_radius = monitoring_radius  # set properly in set_encounter
+        # Monitoring radius 
+        self.monitoring_radius = monitoring_radius
 
-        # ---- Robustness margin for action masking ----
-        # Actions are masked (allowed) when their simulated robustness is
-        # below -margin, meaning they are safely away from violation.
-        # Without a margin (margin=0), masking only kicks in at the boundary
-        # of violation — often too late for the discrete action space to
-        # contain any compliant action. A margin of ~2.0 gives early warning:
-        # the agent is steered away from encounters while there are still
-        # multiple viable actions available.
-        #
-        # The magnitude is relative to the pacSTL robustness scale. From
-        # the pacSTL paper Table II, encounter robustness lower bounds are
-        # typically -15 to -25, and upper bounds ~0.1 to 1.3 at trigger time.
-        # A margin of 2.0 means "mask out actions that bring robustness
-        # within 2.0 of zero", which is conservative but safe.
+        # Robustness margin for action masking
         self.robustness_margin = robustness_margin
 
-    # ------------------------------------------------------------------
-    # Configuration
-    # ------------------------------------------------------------------
-
-    def configure_monitoring(self, spec, ellipsoids_Ab_dict, sampling_rate: int = 10):
-        """Attach a pacSTL evaluator and preloaded reachable sets."""
-        self.spec = spec
-        self.ellipsoids_Ab_dict = ellipsoids_Ab_dict
-        self.robustness_sampling_rate = sampling_rate
-
-        # Recompute monitoring radius now that we have the ellipsoid time keys
-        if self._monitoring_radius_override is None and self.encounter_speed > 0:
-            self.monitoring_radius = compute_monitoring_radius(
-                v_max=self.v_max,
-                maneuver_horizon=self.maneuver_horizon,
-                ellipsoids_Ab_dict=self.ellipsoids_Ab_dict,
-                target_speed=self.encounter_speed,
-                monitoring_radius_safety_factor=self._monitoring_radius_safety_factor,
-            )
-            print(f"[MonitoringRadius] Auto-computed: {self.monitoring_radius:.1f} m "
-                  f"(v_max={self.v_max:.2f}, v_target={self.encounter_speed:.2f}, "
-                  f"T_maneuver={self.maneuver_horizon:.1f}, "
-                  f"safety_factor={self._monitoring_radius_safety_factor})")
 
     def set_encounter(
         self,
@@ -172,22 +127,6 @@ class ColregsGym(McGym):
         goal_n = own_n + goal_ahead_distance * np.cos(own_psi_rad)
         goal_e = own_e + goal_ahead_distance * np.sin(own_psi_rad)
 
-        # Compute monitoring radius from encounter parameters
-        if self._monitoring_radius_override is not None:
-            self.monitoring_radius = self._monitoring_radius_override
-            print(f"[MonitoringRadius] Using override: {self.monitoring_radius:.1f} m")
-        else:
-            self.monitoring_radius = compute_monitoring_radius(
-                v_max=self.v_max,
-                maneuver_horizon=self.maneuver_horizon,
-                ellipsoids_Ab_dict=self.ellipsoids_Ab_dict,
-                target_speed=self.encounter_speed,
-                monitoring_radius_safety_factor=self._monitoring_radius_safety_factor,
-            )
-            print(f"[MonitoringRadius] Auto-computed: {self.monitoring_radius:.1f} m "
-                  f"(v_max={self.v_max:.2f}, v_target={target_speed:.2f}, "
-                  f"T_maneuver={self.maneuver_horizon:.1f}, "
-                  f"safety_factor={self._monitoring_radius_safety_factor})")
 
         self.set_task(
             start_position=start_position,
@@ -195,6 +134,11 @@ class ColregsGym(McGym):
             wave_conditions=wave_conditions,
             simtime=simtime,
         )
+    
+    def configure_monitoring(self, spec, ellipsoids_Ab_dict, sampling_rate=10):
+        self.spec = spec
+        self.ellipsoids_Ab_dict = ellipsoids_Ab_dict
+        self.robustness_sampling_rate = sampling_rate
 
     # ------------------------------------------------------------------
     # Monitoring radius check
@@ -338,8 +282,11 @@ class ColregsGym(McGym):
         progress = self.prev_dist_to_goal - dist
         self.prev_dist_to_goal = dist
         cte = cross_track_error(pos_xy, self._nominal_path_start, self.goal[:2])
-        cte_penalty = self.w_cte * min(abs(cte), self.cte_clip)
-        return progress - cte_penalty
+        if not self._within_monitoring_radius(): 
+            cte_penalty = self.w_cte * min(abs(cte), self.cte_clip)
+            return progress - cte_penalty
+        else:
+            return progress
 
     # ------------------------------------------------------------------
     # Observation
@@ -363,10 +310,6 @@ class ColregsGym(McGym):
             obs = np.nan_to_num(obs, nan=0.0, posinf=1e6, neginf=-1e6)
 
         return obs.astype(np.float32)
-
-    # ------------------------------------------------------------------
-    # pacSTL monitoring
-    # ------------------------------------------------------------------
 
     # ------------------------------------------------------------------
     # Action masking and decoding
