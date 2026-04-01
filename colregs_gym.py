@@ -11,12 +11,9 @@ from pacstl.common.interfaces import PACReachableSet, TimeStampedState
 from mchorcrux.numpy_core.controllers.adaptive_seakeeping import heading_to_goal, MRACShipController
 from vessel_utils import cross_track_error, to_obstacle_frame, wrap_angle, within_monitoring_radius, propagate_vessel, simulate_candidate_trajectory
 from robustness_utils import evaluate_robustness, extract_robustness_upper
+from mask_utils import get_action_mask, decode_discrete_actions
+from config import HEADING_OFFSETS, SPEED_MULTIPLIERS, N_DISCRETE_ACTIONS
 
-
-# Discrete action space
-HEADING_OFFSETS = np.deg2rad([-45, -30, -15, -10, -5, 0, 5, 10, 15, 30, 45])
-SPEED_MULTIPLIERS = np.array([0.0, 0.25, 0.5, 0.75, 1.0])
-N_DISCRETE_ACTIONS = len(HEADING_OFFSETS) * len(SPEED_MULTIPLIERS)
 
 from gymnasium import spaces
 from mchorcrux.numpy_core.controllers.adaptive_seakeeping import MRACShipController
@@ -201,7 +198,7 @@ class ColregsGym(McGym):
                 break
 
             obs = self._obs()
-            psi_d, u_d = self.decode_discrete_actions(action, obs)
+            psi_d, u_d = decode_discrete_actions(action, obs)
             tau = self._controller.compute_action_minimal(self.get_state(), psi_d, u_d)
 
             # Also catch states that are finite but too large for float32
@@ -299,81 +296,6 @@ class ColregsGym(McGym):
     # ------------------------------------------------------------------
     # Action masking and decoding
     # ------------------------------------------------------------------
-
-    def get_action_mask(self, situation, maneuver_spec):
-        print("Computing action mask...")
-        if self.ellipsoids_Ab_dict is None:
-            return np.ones(N_DISCRETE_ACTIONS, dtype=bool)
-
-        # Skip mask computation if outside monitoring radius
-        if not within_monitoring_radius(self.encounter_vessel_eta, self.monitoring_radius, self.get_state()):
-            return np.ones(N_DISCRETE_ACTIONS, dtype=bool)
-
-        obs = self._obs()
-        mask = np.zeros(N_DISCRETE_ACTIONS, dtype=bool)
-
-        # Track robustness per action for ranked fallback
-        action_robustness = np.full(N_DISCRETE_ACTIONS, np.inf)
-
-        reachable_tube = {}
-        for time_step, raw_tuple in self.ellipsoids_Ab_dict.items():
-            A, b, c = raw_tuple
-            reachable_tube[time_step] = PACReachableSet(
-                time_step=time_step, A_matrix=A, b_vector=b, center=c
-            )
-
-        # Pre-filter: skip actions that violate COLREGS turning direction
-        candidates = []
-        for action_idx in range(N_DISCRETE_ACTIONS):
-            h_idx = action_idx // len(SPEED_MULTIPLIERS)
-            if situation == "crossing" and HEADING_OFFSETS[h_idx] < 0:
-                continue
-            candidates.append(action_idx)
-
-        # Evaluate each candidate action
-        for action_idx in candidates:
-            psi_d, u_d = self.decode_discrete_actions(action_idx, obs)
-            ego_trajectory = simulate_candidate_trajectory(psi_d, u_d, self.get_state(), self.encounter_vessel_eta, self.encounter_speed, self.r_max, self.ellipsoids_Ab_dict, self.sim_dt, self.v_max)
-            robustness = maneuver_spec.evaluate(reachable_tube, ego_trajectory)
-
-            # Extract the upper bound of the robustness interval
-            rob_upper = extract_robustness_upper(robustness)
-
-            if rob_upper is not None:
-                action_robustness[action_idx] = rob_upper
-                # Allow action if its robustness upper bound is safely below
-                # the margin. Negative robustness = no encounter detected.
-                # The margin pushes the threshold below zero so the agent
-                # avoids actions that are *close to* triggering an encounter.
-                mask[action_idx] = rob_upper < -self.robustness_margin
-
-        # Fallback: if no action passes the margin, allow the least-bad ones.
-        # This prevents the all-zeros mask that crashes MaskablePPO.
-        if not mask.any():
-            # Only consider COLREGS-directional candidates
-            candidate_rob = {idx: action_robustness[idx] for idx in candidates
-                            if np.isfinite(action_robustness[idx])}
-
-            if candidate_rob:
-                # Pick actions with the lowest (most negative) robustness —
-                # these are furthest from violation
-                min_rob = min(candidate_rob.values())
-                # Allow all actions within 1.0 of the best available
-                for idx, rob in candidate_rob.items():
-                    if rob <= min_rob + 1.0:
-                        mask[idx] = True
-
-                print(f"[ActionMask] Fallback: {mask.sum()} actions allowed "
-                      f"(best robustness={min_rob:.2f})")
-            else:
-                # Absolute last resort: allow all starboard turns
-                for action_idx in candidates:
-                    h_idx = action_idx // len(SPEED_MULTIPLIERS)
-                    if HEADING_OFFSETS[h_idx] > 0:
-                        mask[action_idx] = True
-                print(f"[ActionMask] Emergency fallback: starboard turns only")
-
-        return mask
     
     def _update_encounter_state(self, robustness):
         if robustness is None:
@@ -396,28 +318,12 @@ class ColregsGym(McGym):
                 if not was_active:
                     print(f"[Encounter] Activated (rob_upper={rob_interval.u:.2f}, "
                           f"margin={self.robustness_margin:.1f})")
-                    self._cached_mask = self.get_action_mask(
-                        self.encounter_type, self._active_maneuver_spec
-                    )
+                    self._cached_mask = get_action_mask(self.encounter_type, self._active_maneuver_spec, self.ellipsoids_Ab_dict, self.encounter_vessel_eta, self.get_state(), self.encounter_speed, self.robustness_margin, self.monitoring_radius, self._obs(), self.robustness_margin, self.r_max, self.sim_dt, self.v_max)
                     self._steps_since_mask_update = 0
                 return
 
         self._encounter_active = False
         self._active_maneuver_spec = None
-
-
-    @staticmethod
-    def decode_discrete_actions(action_idx: int, obs: np.ndarray) -> tuple:
-        h_idx = action_idx // len(SPEED_MULTIPLIERS)
-        s_idx = action_idx % len(SPEED_MULTIPLIERS)
-
-        n, e, psi = obs[0], obs[1], obs[2]
-        gn, ge = obs[6], obs[7]
-        psi_goal = heading_to_goal(n, e, gn, ge)
-
-        psi_d = psi_goal + HEADING_OFFSETS[h_idx]
-        u_d = SPEED_MULTIPLIERS[s_idx]
-        return psi_d, u_d
 
     def action_masks(self) -> np.ndarray:
         if not self._encounter_active or self._active_maneuver_spec is None:
@@ -432,9 +338,7 @@ class ColregsGym(McGym):
 
         self._steps_since_mask_update += 1
         if self._steps_since_mask_update >= self._mask_recompute_interval:
-            self._cached_mask = self.get_action_mask(
-                self.encounter_type, self._active_maneuver_spec
-            )
+            self._cached_mask = get_action_mask(self.encounter_type, self._active_maneuver_spec, self.ellipsoids_Ab_dict, self.encounter_vessel_eta, self.get_state(), self.encounter_speed, self.robustness_margin, self.monitoring_radius, self._obs(), self.robustness_margin, self.r_max, self.sim_dt, self.v_max)
             self._steps_since_mask_update = 0
 
         return self._cached_mask
