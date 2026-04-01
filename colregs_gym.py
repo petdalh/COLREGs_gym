@@ -10,7 +10,7 @@ from mchorcrux.numpy_core.gym.mc_gym_csad_numpy import McGym
 from mchorcrux.numpy_core.controllers.adaptive_seakeeping import MRACShipController
 from utils.geometry import cross_track_error, within_monitoring_radius, propagate_vessel
 from utils.robustness import evaluate_robustness
-from logic.masking import get_action_mask, decode_discrete_actions
+from logic.masking import ActionMasker, decode_discrete_actions
 from config import N_DISCRETE_ACTIONS
 from gymnasium import spaces
 
@@ -47,6 +47,11 @@ class ColregsGym(McGym):
         self.v_max = vessel_model.v_max
         self.r_min = vessel_model.yaw_dot_min
         self.r_max = vessel_model.yaw_dot_max
+        self._action_masker = ActionMasker(
+            v_max=self.v_max,
+            r_max=self.r_max,
+            sim_dt=sim_dt,
+        )
 
         self.prev_dist_to_goal = 0.0
         self._step_count = 0
@@ -132,6 +137,11 @@ class ColregsGym(McGym):
         self.spec = spec
         self.ellipsoids_Ab_dict = ellipsoids_Ab_dict
         self.robustness_sampling_rate = sampling_rate
+        if self._active_maneuver_spec is not None:
+            self._action_masker.update_scenario(
+                self._active_maneuver_spec,
+                self.ellipsoids_Ab_dict,
+            )
 
     # ------------------------------------------------------------------
     # Gym interface
@@ -310,16 +320,29 @@ class ColregsGym(McGym):
                 if self._active_maneuver_spec is None:
                     from pacstl.core.factory import create as create_spec
                     self._active_maneuver_spec = create_spec("colregs", "crossing_detection")
+                    self._action_masker.update_scenario(
+                        self._active_maneuver_spec,
+                        self.ellipsoids_Ab_dict,
+                    )
                 # Force mask recomputation on transition
                 if not was_active:
                     print(f"[Encounter] Activated (rob_upper={rob_interval.u:.2f}, "
                           f"margin={self.robustness_margin:.1f})")
-                    self._cached_mask = get_action_mask(self.encounter_type, self._active_maneuver_spec, self.ellipsoids_Ab_dict, self.encounter_vessel_eta, self.get_state(), self.encounter_speed, self.robustness_margin, self.monitoring_radius, self._obs(), self.robustness_margin, self.r_max, self.sim_dt, self.v_max)
+                    self._cached_mask = self._action_masker.get_mask(
+                        situation=self.encounter_type,
+                        ego_state=self.get_state(),
+                        encounter_vessel_eta=self.encounter_vessel_eta,
+                        encounter_speed=self.encounter_speed,
+                        obs=self._obs(),
+                        robustness_margin=self.robustness_margin,
+                        monitoring_radius=self.monitoring_radius,
+                    )
                     self._steps_since_mask_update = 0
                 return
 
         self._encounter_active = False
         self._active_maneuver_spec = None
+        self._action_masker.update_scenario(None, None)
 
     def action_masks(self) -> np.ndarray:
         if not self._encounter_active or self._active_maneuver_spec is None:
@@ -330,11 +353,20 @@ class ColregsGym(McGym):
             self._encounter_active = False
             self._active_maneuver_spec = None
             self._cached_mask = np.ones(N_DISCRETE_ACTIONS, dtype=bool)
+            self._action_masker.update_scenario(None, None)
             return self._cached_mask
 
         self._steps_since_mask_update += 1
         if self._steps_since_mask_update >= self._mask_recompute_interval:
-            self._cached_mask = get_action_mask(self.encounter_type, self._active_maneuver_spec, self.ellipsoids_Ab_dict, self.encounter_vessel_eta, self.get_state(), self.encounter_speed, self.robustness_margin, self.monitoring_radius, self._obs(), self.robustness_margin, self.r_max, self.sim_dt, self.v_max)
+            self._cached_mask = self._action_masker.get_mask(
+                situation=self.encounter_type,
+                ego_state=self.get_state(),
+                encounter_vessel_eta=self.encounter_vessel_eta,
+                encounter_speed=self.encounter_speed,
+                obs=self._obs(),
+                robustness_margin=self.robustness_margin,
+                monitoring_radius=self.monitoring_radius,
+            )
             self._steps_since_mask_update = 0
 
         return self._cached_mask

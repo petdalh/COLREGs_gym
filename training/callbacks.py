@@ -1,8 +1,9 @@
 # callbacks.py
 import os
+
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
-from sb3_contrib.common.maskable.utils import get_action_masks
+
 from training.plotting import plot_episode_trajectory, plot_robustness
 
 
@@ -97,9 +98,7 @@ class ColregsMonitorCallback(BaseCallback):
         # Reward curve with rolling average
         axes[0].plot(self.episode_rewards, alpha=0.3, color="blue")
         if len(self.episode_rewards) >= 20:
-            rolling = np.convolve(
-                self.episode_rewards, np.ones(20) / 20, mode="valid"
-            )
+            rolling = np.convolve(self.episode_rewards, np.ones(20) / 20, mode="valid")
             axes[0].plot(range(19, 19 + len(rolling)), rolling, color="blue")
         axes[0].set_ylabel("Episode Reward")
         axes[0].set_title("Training Progress")
@@ -108,9 +107,7 @@ class ColregsMonitorCallback(BaseCallback):
         # Episode length
         axes[1].plot(self.episode_lengths, alpha=0.3, color="green")
         if len(self.episode_lengths) >= 20:
-            rolling = np.convolve(
-                self.episode_lengths, np.ones(20) / 20, mode="valid"
-            )
+            rolling = np.convolve(self.episode_lengths, np.ones(20) / 20, mode="valid")
             axes[1].plot(range(19, 19 + len(rolling)), rolling, color="green")
         axes[1].set_ylabel("Episode Length")
         axes[1].grid(True, alpha=0.3)
@@ -128,7 +125,10 @@ class ColregsMonitorCallback(BaseCallback):
                 timeouts.append(sum(1 for r in chunk if r == "time_limit") / window)
             x = range(window, len(self.episode_reasons) + 1)
             axes[2].stackplot(
-                x, goals, collisions, timeouts,
+                x,
+                goals,
+                collisions,
+                timeouts,
                 labels=["Goal", "Collision", "Timeout"],
                 colors=["#2ecc71", "#e74c3c", "#f39c12"],
                 alpha=0.7,

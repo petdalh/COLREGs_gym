@@ -1,11 +1,3 @@
-"""
-Train COLREGs MaskablePPO agent with pacSTL monitoring.
-
-The monitoring radius gates pacSTL evaluation and action masking so that
-the optimizer is only invoked when the encounter vessel is close enough
-for the robustness calculation to be meaningful and well-conditioned.
-"""
-
 import argparse
 import os
 from sb3_contrib import MaskablePPO

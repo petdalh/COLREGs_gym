@@ -1,10 +1,3 @@
-"""
-Plotting utilities for COLREGs RL training with pacSTL monitoring.
-
-- plot_episode_trajectory: ego + obstacle trajectories with time-step markers
-- plot_robustness: interval robustness [h̲, h̄] over time with shaded band
-"""
-
 import numpy as np
 import matplotlib.pyplot as plt
 
