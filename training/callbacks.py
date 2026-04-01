@@ -3,7 +3,7 @@ import os
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
 from sb3_contrib.common.maskable.utils import get_action_masks
-from plotting import plot_episode_trajectory, plot_robustness
+from training.plotting import plot_episode_trajectory, plot_robustness
 
 
 class ColregsMonitorCallback(BaseCallback):

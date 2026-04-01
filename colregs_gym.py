@@ -7,16 +7,12 @@ collision detection, and pacSTL robustness evaluation.
 
 import numpy as np
 from mchorcrux.numpy_core.gym.mc_gym_csad_numpy import McGym
-from pacstl.common.interfaces import PACReachableSet, TimeStampedState
-from mchorcrux.numpy_core.controllers.adaptive_seakeeping import heading_to_goal, MRACShipController
-from vessel_utils import cross_track_error, to_obstacle_frame, wrap_angle, within_monitoring_radius, propagate_vessel, simulate_candidate_trajectory
-from robustness_utils import evaluate_robustness, extract_robustness_upper
-from mask_utils import get_action_mask, decode_discrete_actions
-from config import HEADING_OFFSETS, SPEED_MULTIPLIERS, N_DISCRETE_ACTIONS
-
-
-from gymnasium import spaces
 from mchorcrux.numpy_core.controllers.adaptive_seakeeping import MRACShipController
+from utils.geometry import cross_track_error, within_monitoring_radius, propagate_vessel
+from utils.robustness import evaluate_robustness
+from logic.masking import get_action_mask, decode_discrete_actions
+from config import N_DISCRETE_ACTIONS
+from gymnasium import spaces
 
 class ColregsGym(McGym):
     def __init__(self, vessel_model, dt, grid_width, grid_height,

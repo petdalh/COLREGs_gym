@@ -1,12 +1,28 @@
 from pacstl.core.evaluator import PacSTLEvaluator
 from pacstl.common.interfaces import TimeStampedState, PACReachableSet
 import numpy as np
-from vessel_utils import simulate_candidate_trajectory, within_monitoring_radius
-from robustness_utils import extract_robustness_upper
+from logic.trajectory import simulate_candidate_trajectory
+from utils.geometry import within_monitoring_radius
+from utils.robustness import extract_robustness_upper
 from mchorcrux.numpy_core.controllers.adaptive_seakeeping import heading_to_goal
 from config import HEADING_OFFSETS, SPEED_MULTIPLIERS, N_DISCRETE_ACTIONS
 
-def get_action_mask(situation: str, maneuver_spec: PacSTLEvaluator, ellipsoids_Ab_dict: dict, encounter_vessel_eta: tuple, state: dict, encounter_speed: float, robustness_margin: float, monitoring_radius: float, obs: dict, robutness_margin: float, r_max: float, sim_dt: float, v_max: float) -> np.ndarray:
+
+def get_action_mask(
+    situation: str,
+    maneuver_spec: PacSTLEvaluator,
+    ellipsoids_Ab_dict: dict,
+    encounter_vessel_eta: tuple,
+    state: dict,
+    encounter_speed: float,
+    robustness_margin: float,
+    monitoring_radius: float,
+    obs: dict,
+    robutness_margin: float,
+    r_max: float,
+    sim_dt: float,
+    v_max: float,
+) -> np.ndarray:
     print("Computing action mask...")
     if ellipsoids_Ab_dict is None:
         return np.ones(N_DISCRETE_ACTIONS, dtype=bool)
@@ -38,7 +54,17 @@ def get_action_mask(situation: str, maneuver_spec: PacSTLEvaluator, ellipsoids_A
     # Evaluate each candidate action
     for action_idx in candidates:
         psi_d, u_d = decode_discrete_actions(action_idx, obs)
-        ego_trajectory = simulate_candidate_trajectory(psi_d, u_d, state, encounter_vessel_eta, encounter_speed, r_max, ellipsoids_Ab_dict, sim_dt, v_max)
+        ego_trajectory = simulate_candidate_trajectory(
+            psi_d,
+            u_d,
+            state,
+            encounter_vessel_eta,
+            encounter_speed,
+            r_max,
+            ellipsoids_Ab_dict,
+            sim_dt,
+            v_max,
+        )
         robustness = maneuver_spec.evaluate(reachable_tube, ego_trajectory)
 
         # Extract the upper bound of the robustness interval
@@ -56,8 +82,11 @@ def get_action_mask(situation: str, maneuver_spec: PacSTLEvaluator, ellipsoids_A
     # This prevents the all-zeros mask that crashes MaskablePPO.
     if not mask.any():
         # Only consider COLREGS-directional candidates
-        candidate_rob = {idx: action_robustness[idx] for idx in candidates
-                        if np.isfinite(action_robustness[idx])}
+        candidate_rob = {
+            idx: action_robustness[idx]
+            for idx in candidates
+            if np.isfinite(action_robustness[idx])
+        }
 
         if candidate_rob:
             # Pick actions with the lowest (most negative) robustness —
@@ -68,8 +97,10 @@ def get_action_mask(situation: str, maneuver_spec: PacSTLEvaluator, ellipsoids_A
                 if rob <= min_rob + 1.0:
                     mask[idx] = True
 
-            print(f"[ActionMask] Fallback: {mask.sum()} actions allowed "
-                    f"(best robustness={min_rob:.2f})")
+            print(
+                f"[ActionMask] Fallback: {mask.sum()} actions allowed "
+                f"(best robustness={min_rob:.2f})"
+            )
         else:
             # Absolute last resort: allow all starboard turns
             for action_idx in candidates:
@@ -79,6 +110,7 @@ def get_action_mask(situation: str, maneuver_spec: PacSTLEvaluator, ellipsoids_A
             print("[ActionMask] Emergency fallback: starboard turns only")
 
     return mask
+
 
 def decode_discrete_actions(action_idx: int, obs: dict) -> tuple:
     h_idx = action_idx // len(SPEED_MULTIPLIERS)
@@ -91,3 +123,4 @@ def decode_discrete_actions(action_idx: int, obs: dict) -> tuple:
     psi_d = psi_goal + HEADING_OFFSETS[h_idx]
     u_d = SPEED_MULTIPLIERS[s_idx]
     return psi_d, u_d
+

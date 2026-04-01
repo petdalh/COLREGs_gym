@@ -2,9 +2,16 @@ from pacstl.core.evaluator import PacSTLEvaluator
 from pacstl.common.interfaces import TimeStampedState, PACReachableSet
 import interval
 import numpy as np
-from vessel_utils import to_obstacle_frame, wrap_angle
+from .geometry import to_obstacle_frame, wrap_angle
 
-def evaluate_robustness(spec: PacSTLEvaluator, ellipsoids_Ab_dict: dict, encounter_vessel_eta: tuple, state: dict, encounter_speed: float) -> interval.interval:
+
+def evaluate_robustness(
+    spec: PacSTLEvaluator,
+    ellipsoids_Ab_dict: dict,
+    encounter_vessel_eta: tuple,
+    state: dict,
+    encounter_speed: float,
+) -> interval.interval:
     """Evaluate the pacSTL specification over the prediction horizon."""
     if spec is None or ellipsoids_Ab_dict is None:
         return None
@@ -54,10 +61,9 @@ def evaluate_robustness(spec: PacSTLEvaluator, ellipsoids_Ab_dict: dict, encount
 
         # 6D state in obstacle-relative frame:
         # [p_x, p_y, psi_rel, v_x, v_y, |v|]
-        state_array = np.array([
-            local_x, local_y, psi_rel,
-            local_vx, local_vy, speed
-        ])
+        state_array = np.array(
+            [local_x, local_y, psi_rel, local_vx, local_vy, speed]
+        )
 
         ego_trajectory[time_step] = TimeStampedState(
             time_step=time_step, state_array=state_array
@@ -68,7 +74,7 @@ def evaluate_robustness(spec: PacSTLEvaluator, ellipsoids_Ab_dict: dict, encount
 
     return spec.evaluate(reachable_tube, ego_trajectory)
 
-    
+
 def extract_robustness_upper(robustness) -> float:
     """Extract the upper bound from a pacSTL robustness result.
 
@@ -79,22 +85,22 @@ def extract_robustness_upper(robustness) -> float:
         return None
 
     # Direct interval object with .u attribute
-    if hasattr(robustness, 'u'):
+    if hasattr(robustness, "u"):
         return float(robustness.u)
 
     # List of (time, interval) tuples — take the worst (max) upper bound
-    if hasattr(robustness, '__getitem__'):
+    if hasattr(robustness, "__getitem__"):
         try:
             # robustness is [(trace_list)] or similar nested structure
             if len(robustness) > 0:
                 trace = robustness[0] if isinstance(robustness[0], list) else robustness
                 max_u = -np.inf
                 for item in trace:
-                    if hasattr(item, '__getitem__') and len(item) >= 2:
+                    if hasattr(item, "__getitem__") and len(item) >= 2:
                         _, rob_interval = item[0], item[1]
-                        if hasattr(rob_interval, 'u'):
+                        if hasattr(rob_interval, "u"):
                             max_u = max(max_u, float(rob_interval.u))
-                    elif hasattr(item, 'u'):
+                    elif hasattr(item, "u"):
                         max_u = max(max_u, float(item.u))
                 if np.isfinite(max_u):
                     return max_u

@@ -13,8 +13,8 @@ from pacstl.core.factory import create as create_spec
 from pacstl.domains.colregs.utils import USV_DEFAULT
 
 from colregs_gym import ColregsGym
-from reachable_sets import preload_reachable_sets, select_reachable_set
-from callbacks import ColregsMonitorCallback
+from utils.reachable_sets import preload_reachable_sets, select_reachable_set
+from training.callbacks import ColregsMonitorCallback
 
 
 def make_env(dt: float = 0.5, monitoring_radius: float = None,
