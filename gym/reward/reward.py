@@ -4,9 +4,9 @@ from gym.utils.geometry import cross_track_error, within_monitoring_radius
 
 
 class Reward:
-    def __init__(self, config):
-        self.w_cte = config.get("w_cte", 1.0)
-        self.cte_clip = config.get("cte_clip", 10.0)
+    def __init__(self, w_cte=1.0, cte_clip=10.0):
+        self.w_cte = w_cte
+        self.cte_clip = cte_clip
         self.prev_dist_to_goal = None
         self.episode_total = 0.0
 

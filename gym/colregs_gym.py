@@ -12,19 +12,26 @@ from gym.utils.config import load_config
 
 from gymnasium import spaces
 
-from mchorcrux.numpy_core.gym.mc_gym_csad_numpy import MCGym
+from mchorcrux.numpy_core.gym.mc_gym_csad_numpy import McGym
 from mchorcrux.numpy_core.controllers.adaptive_seakeeping import MRACShipController
 
 import numpy as np
 
 
-class COLREGsGym(MCGym):
+class COLREGsGym(McGym):
     def __init__(
         self,
         vessel_model,
         dt,
         grid_width,
         grid_height,
+        maneuver_horizon=10.0,
+        sim_dt=0.5,
+        monitoring_radius=None,
+        monitoring_radius_safety_factor=2.0,
+        robustness_margin=1.0,
+        w_cte=0.005,
+        cte_clip=5.0,
         config=load_config("configuration/config.yaml"),
         **kwargs,
     ):
@@ -33,7 +40,11 @@ class COLREGsGym(MCGym):
         )
 
         self.vessel_model = vessel_model
-        self.encounter_scenario = EncounterScenario(vessel_model)
+        self.encounter_scenario = EncounterScenario(
+            vessel_model,
+            maneuver_horizon=maneuver_horizon,
+            monitoring_radius_safety_factor=monitoring_radius_safety_factor,
+        )
         self.vessel_action = Action(config)
         self.action_space = spaces.Discrete(self.vessel_action.n_actions)
         self.observation_space = spaces.Box(
@@ -41,34 +52,23 @@ class COLREGsGym(MCGym):
         )
         self.spec = None
         self.ellipsoids_Ab_dict = None
-        self.robustness_sampling_rate = 10
-        self.robustness_margin = 1.0
-        self._encounter_active = False
-        self._active_maneuver_spec = None
-        self._cached_mask = np.ones(self.vessel_action.n_actions, dtype=bool)
-        self._mask_recompute_interval = 2
-        self._steps_since_mask_update = 0
-        self.v_min = getattr(vessel_model, "v_min", None)
-        self.v_max = getattr(vessel_model, "v_max", None)
-        self.r_min = getattr(vessel_model, "yaw_dot_min", None)
-        self.r_max = getattr(vessel_model, "yaw_dot_max", None)
+        self.reward = Reward(w_cte=w_cte, cte_clip=cte_clip)
         self.masking = Masking(
             n_actions=self.vessel_action.n_actions,
-            robustness_margin=self.robustness_margin,
-            mask_recompute_interval=self._mask_recompute_interval,
+            robustness_margin=robustness_margin,
+            mask_recompute_interval=2,
             vessel_model=vessel_model,
-            sim_dt=self.dt,
+            sim_dt=sim_dt,
         )
         self.state = State(
-            monitoring_radius=self.monitoring_radius,
+            monitoring_radius=monitoring_radius,
             n_actions=self.vessel_action.n_actions,
         )
         self.observation = Observation(config)
-        self.reward = Reward(config)
         self.robustness = Robustness(
             spec=self.spec,
             ellipsoids_Ab_dict=self.ellipsoids_Ab_dict,
-            sampling_rate=self.robustness_sampling_rate,
+            sampling_rate=10,
         )
         self.termination = Termination()
         self.truncation = Truncation()
@@ -146,7 +146,6 @@ class COLREGsGym(MCGym):
     def configure_monitoring(self, spec, ellipsoids_Ab_dict, sampling_rate=10):
         self.spec = spec
         self.ellipsoids_Ab_dict = ellipsoids_Ab_dict
-        self.robustness_sampling_rate = sampling_rate
         self.robustness.spec = spec
         self.robustness.ellipsoids_Ab_dict = ellipsoids_Ab_dict
         self.robustness.sampling_rate = sampling_rate
@@ -171,7 +170,6 @@ class COLREGsGym(MCGym):
         self.state.reset()
         self.reward.reset()
         self.masking.reset(self)
-        self._steps_since_mask_update = 0
         self.history_ego = self.state.history_ego
         self.history_enc = self.state.history_enc
         self.history_rob = self.state.history_rob

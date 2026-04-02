@@ -37,14 +37,10 @@ class Masking:
 
     def reset(self, env):
         self._steps_since_mask_update = 0
-        env._steps_since_mask_update = 0
         if env.state is not None:
             env.state._encounter_active = False
             env.state._active_maneuver_spec = None
             env.state._cached_mask = self._default_mask()
-        env._encounter_active = False
-        env._active_maneuver_spec = None
-        env._cached_mask = self._default_mask()
         if self._action_masker is not None:
             self._action_masker.update_scenario(None, None)
 
@@ -64,7 +60,6 @@ class Masking:
         for _, rob_interval in trace_list:
             if rob_interval.u > -self.robustness_margin:
                 env.state._encounter_active = True
-                env._encounter_active = True
                 if env.state._active_maneuver_spec is None:
                     try:
                         from pacstl.core.factory import create as create_spec
@@ -72,7 +67,6 @@ class Masking:
                         env.state._active_maneuver_spec = create_spec(
                             "colregs", "crossing_detection"
                         )
-                        env._active_maneuver_spec = env.state._active_maneuver_spec
                         if self._action_masker is not None:
                             self._action_masker.update_scenario(
                                 env.state._active_maneuver_spec,
@@ -80,7 +74,6 @@ class Masking:
                             )
                     except ModuleNotFoundError:
                         env.state._active_maneuver_spec = None
-                        env._active_maneuver_spec = None
                 if not was_active:
                     print(
                         f"[Encounter] Activated (rob_upper={rob_interval.u:.2f}, "
@@ -90,17 +83,12 @@ class Masking:
                         env,
                         robustness_margin=self.robustness_margin,
                     )
-                    env._cached_mask = env.state._cached_mask
                     self._steps_since_mask_update = 0
-                    env._steps_since_mask_update = 0
                 return
 
         env.state._encounter_active = False
-        env._encounter_active = False
         env.state._active_maneuver_spec = None
-        env._active_maneuver_spec = None
         env.state._cached_mask = self._default_mask()
-        env._cached_mask = env.state._cached_mask
         if self._action_masker is not None:
             self._action_masker.update_scenario(None, None)
 
@@ -109,28 +97,24 @@ class Masking:
             return self._default_mask()
 
         if not within_monitoring_radius(
-            env.state.encounter_vessel_eta, env.monitoring_radius, env.get_state()
+            env.state.encounter_vessel_eta,
+            env.state.monitoring_radius,
+            env.get_state(),
         ):
             env.state._encounter_active = False
-            env._encounter_active = False
             env.state._active_maneuver_spec = None
-            env._active_maneuver_spec = None
             env.state._cached_mask = self._default_mask()
-            env._cached_mask = env.state._cached_mask
             if self._action_masker is not None:
                 self._action_masker.update_scenario(None, None)
             return env.state._cached_mask
 
         self._steps_since_mask_update += 1
-        env._steps_since_mask_update = self._steps_since_mask_update
         if self._steps_since_mask_update >= self.mask_recompute_interval:
             env.state._cached_mask = self._compute_mask(
                 env,
-                robustness_margin=env.robustness_margin,
+                robustness_margin=self.robustness_margin,
             )
-            env._cached_mask = env.state._cached_mask
             self._steps_since_mask_update = 0
-            env._steps_since_mask_update = 0
 
         return env.state._cached_mask
 
@@ -145,5 +129,5 @@ class Masking:
             encounter_speed=env.state.encounter_speed,
             obs=env._obs(),
             robustness_margin=robustness_margin,
-            monitoring_radius=env.monitoring_radius,
+            monitoring_radius=env.state.monitoring_radius,
         )

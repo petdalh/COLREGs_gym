@@ -2,9 +2,16 @@ import numpy as np
 
 
 class EncounterScenario:
-    def __init__(self, vessel_model):
+    def __init__(
+        self,
+        vessel_model,
+        maneuver_horizon=10.0,
+        monitoring_radius_safety_factor=2.0,
+    ):
         self.v_min = getattr(vessel_model, "v_min", None)
         self.v_max = getattr(vessel_model, "v_max", None)
+        self.maneuver_horizon = maneuver_horizon
+        self.monitoring_radius_safety_factor = monitoring_radius_safety_factor
         self.start_position = None
         self.wave_conditions = None
         self.encounter_type = None
@@ -65,6 +72,15 @@ class EncounterScenario:
         self.goal = (goal_n, goal_e, 1.0)
 
     def apply(self, env):
+        env.start_position = np.array(
+            [
+                self.start_position[0],
+                self.start_position[1],
+                np.deg2rad(self.start_position[2]),
+            ]
+        )
+        env.goal = self.goal
+        env.wave_conditions = self.wave_conditions
         env.state.encounter_scenario = self
         env.state.goal = self.goal
         env.state.nominal_path_start = self.nominal_path_start
