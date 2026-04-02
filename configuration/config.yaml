@@ -1,3 +1,47 @@
-action_space:
-  heading_offsets_deg: [-45, -30, -15, -10, -5, 0, 5, 10, 15, 30, 45]
-  speed_multipliers: [0.0, 0.25, 0.5, 0.75, 1.0]
+training_configuration:
+  algorithm: PPO
+  policy: MlpPolicy
+  remove_existing_logging: false
+  training_timesteps: 100000
+  checkpoint_dir: checkpoints/ppo_mask
+  checkpoint_freq: 10000
+  tensorboard_log: logs/colregs_ppo
+  plot_dir: plots
+  plot_every_episodes: 1
+  policy_net_arch: [128, 128]
+  n_steps: 128
+  batch_size: 32
+  learning_rate: 3.0e-4
+
+environment_configuration:
+  dt: 0.5
+  grid_width: 25.0
+  grid_height: 30.0
+  decision_interval: 5
+  sim_dt: 0.5
+
+  action_configuration:
+    heading_offsets_deg: [-45, -30, -15, -10, -5, 0, 5, 10, 15, 30, 45]
+    speed_multipliers: [0.0, 0.25, 0.5, 0.75, 1.0]
+
+  encounter_configuration:
+    start_position: [1.5, 7.5, 0.0]
+    wave_conditions: [0.05, 1.5, 0.0]
+    encounter_type: crossing
+    separation: 6.0
+    target_speed: 0.2
+    goal_ahead_distance: 25.0
+    collision_radius: 1.0
+    simtime: 250.0
+    maneuver_horizon: 10.0
+
+  monitoring_configuration:
+    monitoring_radius: null
+    monitoring_radius_safety_factor: 2.0
+    robustness_margin: 2.0
+    robustness_sampling_rate: 5
+    mask_recompute_interval: 2
+
+  reward_configuration:
+    w_cte: 0.005
+    cte_clip: 5.0

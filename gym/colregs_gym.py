@@ -8,7 +8,7 @@ from gym.masking import Masking
 from gym.state import State
 from gym.termination import Termination
 from gym.truncation import Truncation
-from gym.utils.config import load_config
+from gym.utils.config import resolve_config
 
 from gymnasium import spaces
 
@@ -22,30 +22,65 @@ class COLREGsGym(McGym):
     def __init__(
         self,
         vessel_model,
-        dt,
-        grid_width,
-        grid_height,
-        maneuver_horizon=10.0,
-        sim_dt=0.5,
+        dt=None,
+        grid_width=None,
+        grid_height=None,
+        maneuver_horizon=None,
+        sim_dt=None,
         monitoring_radius=None,
-        monitoring_radius_safety_factor=2.0,
-        robustness_margin=1.0,
-        w_cte=0.005,
-        cte_clip=5.0,
-        config=load_config("configuration/config.yaml"),
+        monitoring_radius_safety_factor=None,
+        robustness_margin=None,
+        w_cte=None,
+        cte_clip=None,
+        config=None,
         **kwargs,
     ):
+        config = resolve_config(config)
+        env_cfg = config.get("environment_configuration", config)
+        action_cfg = env_cfg.get("action_configuration", config)
+        encounter_cfg = env_cfg.get("encounter_configuration", {})
+        monitoring_cfg = env_cfg.get("monitoring_configuration", {})
+        reward_cfg = env_cfg.get("reward_configuration", {})
+
+        dt = dt if dt is not None else env_cfg.get("dt", 0.5)
+        grid_width = grid_width if grid_width is not None else env_cfg.get("grid_width", 25.0)
+        grid_height = grid_height if grid_height is not None else env_cfg.get("grid_height", 30.0)
+        maneuver_horizon = (
+            maneuver_horizon
+            if maneuver_horizon is not None
+            else encounter_cfg.get("maneuver_horizon", 10.0)
+        )
+        sim_dt = sim_dt if sim_dt is not None else env_cfg.get("sim_dt", dt)
+        monitoring_radius = (
+            monitoring_radius
+            if monitoring_radius is not None
+            else monitoring_cfg.get("monitoring_radius")
+        )
+        monitoring_radius_safety_factor = (
+            monitoring_radius_safety_factor
+            if monitoring_radius_safety_factor is not None
+            else monitoring_cfg.get("monitoring_radius_safety_factor", 2.0)
+        )
+        robustness_margin = (
+            robustness_margin
+            if robustness_margin is not None
+            else monitoring_cfg.get("robustness_margin", 1.0)
+        )
+        w_cte = w_cte if w_cte is not None else reward_cfg.get("w_cte", 0.005)
+        cte_clip = cte_clip if cte_clip is not None else reward_cfg.get("cte_clip", 5.0)
+
         super().__init__(
             dt=dt, grid_width=grid_width, grid_height=grid_height, **kwargs
         )
 
         self.vessel_model = vessel_model
+        self.config = config
         self.encounter_scenario = EncounterScenario(
             vessel_model,
             maneuver_horizon=maneuver_horizon,
             monitoring_radius_safety_factor=monitoring_radius_safety_factor,
         )
-        self.vessel_action = Action(config)
+        self.vessel_action = Action(action_cfg)
         self.action_space = spaces.Discrete(self.vessel_action.n_actions)
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(10,), dtype=np.float32
@@ -56,7 +91,7 @@ class COLREGsGym(McGym):
         self.masking = Masking(
             n_actions=self.vessel_action.n_actions,
             robustness_margin=robustness_margin,
-            mask_recompute_interval=2,
+            mask_recompute_interval=monitoring_cfg.get("mask_recompute_interval", 2),
             vessel_model=vessel_model,
             sim_dt=sim_dt,
         )
@@ -64,16 +99,16 @@ class COLREGsGym(McGym):
             monitoring_radius=monitoring_radius,
             n_actions=self.vessel_action.n_actions,
         )
-        self.observation = Observation(config)
+        self.observation = Observation(env_cfg.get("observation_configuration", config))
         self.robustness = Robustness(
             spec=self.spec,
             ellipsoids_Ab_dict=self.ellipsoids_Ab_dict,
-            sampling_rate=10,
+            sampling_rate=monitoring_cfg.get("robustness_sampling_rate", 10),
         )
         self.termination = Termination()
         self.truncation = Truncation()
         self.callback = EpisodeLogger()
-        self.decision_interval = 5
+        self.decision_interval = env_cfg.get("decision_interval", 5)
 
     def set_encounter(
         self,
@@ -143,7 +178,9 @@ class COLREGsGym(McGym):
     def action_masks(self):
         return self.masking.action_masks(self)
 
-    def configure_monitoring(self, spec, ellipsoids_Ab_dict, sampling_rate=10):
+    def configure_monitoring(self, spec, ellipsoids_Ab_dict, sampling_rate=None):
+        if sampling_rate is None:
+            sampling_rate = self.robustness.sampling_rate
         self.spec = spec
         self.ellipsoids_Ab_dict = ellipsoids_Ab_dict
         self.robustness.spec = spec

@@ -4,8 +4,11 @@ from mchorcrux.numpy_core.controllers.adaptive_seakeeping import heading_to_goal
 
 class Action:
     def __init__(self, config: dict):
-
-        action_config = config["action_space"]
+        action_config = (
+            config.get("action_configuration")
+            or config.get("action_space")
+            or config
+        )
 
         self.heading_offsets_deg = np.array(action_config["heading_offsets_deg"])
         self.heading_offsets = np.deg2rad(self.heading_offsets_deg)
