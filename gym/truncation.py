@@ -1,9 +1,5 @@
 class Truncation:
-    def is_truncated(self, state, step_count):
-        """
-        Check if the episode should be truncated.
-
-        Currently returns False — truncation is handled by the parent class.
-        Add custom truncation logic here as needed (e.g., max steps).
-        """
+    def is_truncated(self, env):
+        if env.encounter_max_time and env.curr_sim_time > env.encounter_max_time:
+            return True, {"reason": "time_limit"}
         return False, {}

@@ -81,6 +81,20 @@ class COLREGsGym(MCGym):
             self.callback.on_episode_end(info, terminated, self.reward)
 
         return obs, reward, terminated, truncated, info
+    
+    def _check_termination(self, boat_pos):
+        terminated, truncated, info = super()._check_termination(boat_pos)
+        if terminated or truncated:
+            return terminated, truncated, info
+        terminated, info = self.termination.is_terminated(self, boat_pos)
+        if terminated:
+            return True, False, info
+
+        truncated, info = self.truncation.is_truncated(self)
+        if truncated:
+            return False, True, info
+
+        return False, False, {}
 
     def compute_reward(self, action, prev_action):
         return self.reward.get_reward(self.state)
