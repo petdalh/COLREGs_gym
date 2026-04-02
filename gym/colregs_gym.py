@@ -7,8 +7,13 @@ from gym.state import State
 from gym.termination import Termination
 from gym.truncation import Truncation
 from gym.utils.config import load_config
+
 from gymnasium import spaces
+
 from mchorcrux.numpy_core.gym.mc_gym_csad_numpy import MCGym
+from mchorcrux.numpy_core.controllers.adaptive_seakeeping import MRACShipController
+
+import numpy as np
 
 
 class COLREGsGym(MCGym):
@@ -95,6 +100,47 @@ class COLREGsGym(MCGym):
             return False, True, info
 
         return False, False, {}
+    
+    def reset(self, seed=None, options=None):
+        obs, info = super().reset(seed=seed, options=options)
+        self.state.reset()
+        self.reward.reset()
+        self.history_ego = self.state.history_ego
+        self.history_enc = self.state.history_enc
+        self.history_rob = self.state.history_rob
+        self.history_in_radius = self.state.history_in_radius
+        self._encounter_active = self.state._encounter_active
+        self._active_maneuver_spec = self.state._active_maneuver_spec
+        self._cached_mask = self.state._cached_mask
+
+        if self._encounter_init is not None:
+            self.encounter_vessel_eta = self._encounter_init.copy()
+        else:
+            self.encounter_vessel_eta = None
+
+        self.state.encounter_vessel_eta = self.encounter_vessel_eta
+        self.state.encounter_speed = getattr(self, "encounter_speed", None)
+        self.state.goal = getattr(self, "goal", None)
+        self.state.nominal_path_start = getattr(self, "_nominal_path_start", None)
+        self.state.update_sim(self.get_state())
+
+        state = self.get_state()
+        if self.state.goal is not None:
+            gn, ge = self.state.goal[:2]
+            self.reward.prev_dist_to_goal = np.hypot(
+                gn - state["eta"][0], ge - state["eta"][1]
+            )
+        else:
+            self.reward.prev_dist_to_goal = None
+        self.prev_dist_to_goal = self.reward.prev_dist_to_goal
+        self._step_count = 0
+        self._controller = MRACShipController(dt=self.dt)
+        self._episode_reward = 0.0
+
+        self.state.record()
+
+        return self._obs(), {}
+
 
     def compute_reward(self, action, prev_action):
         return self.reward.get_reward(self.state)
