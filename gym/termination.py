@@ -25,12 +25,12 @@ class Termination:
             )
             return True, {"reason": "out_of_bounds"}
 
-        if env.encounter_vessel_eta is not None:
+        if env.state.encounter_vessel_eta is not None:
             dist = np.hypot(
-                boat_pos[0] - env.encounter_vessel_eta[0],
-                boat_pos[1] - env.encounter_vessel_eta[1],
+                boat_pos[0] - env.state.encounter_vessel_eta[0],
+                boat_pos[1] - env.state.encounter_vessel_eta[1],
             )
-            if dist < env.encounter_radius:
+            if dist < env.state.encounter_radius:
                 return True, {"reason": "collision"}
 
         return False, {}

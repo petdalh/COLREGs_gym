@@ -8,7 +8,7 @@ class Robustness:
         self.ellipsoids_Ab_dict = ellipsoids_Ab_dict
         self.sampling_rate = sampling_rate
 
-    def evaluate(self, state, step_count):
+    def evaluate(self, state, sim_step_count):
         """
         Evaluate robustness if within sampling rate and monitoring radius.
 
@@ -22,7 +22,7 @@ class Robustness:
         )
 
         robustness = None
-        if step_count % self.sampling_rate == 0:
+        if sim_step_count % self.sampling_rate == 0:
             if in_radius:
                 robustness = evaluate_robustness(
                     spec=self.spec,

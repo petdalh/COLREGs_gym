@@ -109,7 +109,7 @@ class Masking:
             return self._default_mask()
 
         if not within_monitoring_radius(
-            env.encounter_vessel_eta, env.monitoring_radius, env.get_state()
+            env.state.encounter_vessel_eta, env.monitoring_radius, env.get_state()
         ):
             env.state._encounter_active = False
             env._encounter_active = False
@@ -139,10 +139,10 @@ class Masking:
             return self._default_mask()
 
         return self._action_masker.get_mask(
-            situation=env.encounter_type,
+            situation=env.state.encounter_type,
             ego_state=env.get_state(),
-            encounter_vessel_eta=env.encounter_vessel_eta,
-            encounter_speed=env.encounter_speed,
+            encounter_vessel_eta=env.state.encounter_vessel_eta,
+            encounter_speed=env.state.encounter_speed,
             obs=env._obs(),
             robustness_margin=robustness_margin,
             monitoring_radius=env.monitoring_radius,

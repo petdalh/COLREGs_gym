@@ -7,7 +7,7 @@ class State:
         self.monitoring_radius = monitoring_radius
 
         self.encounter_vessel_eta = None
-        self.encounter_speed = None
+        self._encounter_speed = None
 
         self._encounter_active = False
         self._active_maneuver_spec = None
@@ -16,8 +16,9 @@ class State:
 
         self.sim_state = None
 
-        self.goal = None
-        self.nominal_path_start = None
+        self.encounter_scenario = None
+        self._goal = None
+        self._nominal_path_start = None
 
         self.history_ego = []
         self.history_enc = []
@@ -32,6 +33,54 @@ class State:
     def position(self):
         """Current vessel position [x, y]."""
         return self.sim_state["eta"][:2]
+
+    @property
+    def encounter_type(self):
+        if self.encounter_scenario is not None:
+            return self.encounter_scenario.encounter_type
+        return None
+
+    @property
+    def encounter_speed(self):
+        if self.encounter_scenario is not None and self.encounter_scenario.target_speed is not None:
+            return self.encounter_scenario.target_speed
+        return self._encounter_speed
+
+    @encounter_speed.setter
+    def encounter_speed(self, value):
+        self._encounter_speed = value
+
+    @property
+    def encounter_radius(self):
+        if self.encounter_scenario is not None:
+            return self.encounter_scenario.collision_radius
+        return None
+
+    @property
+    def encounter_max_time(self):
+        if self.encounter_scenario is not None:
+            return self.encounter_scenario.simtime
+        return None
+
+    @property
+    def goal(self):
+        if self.encounter_scenario is not None and self.encounter_scenario.goal is not None:
+            return self.encounter_scenario.goal
+        return self._goal
+
+    @goal.setter
+    def goal(self, value):
+        self._goal = value
+
+    @property
+    def nominal_path_start(self):
+        if self.encounter_scenario is not None and self.encounter_scenario.nominal_path_start is not None:
+            return self.encounter_scenario.nominal_path_start
+        return self._nominal_path_start
+
+    @nominal_path_start.setter
+    def nominal_path_start(self, value):
+        self._nominal_path_start = value
 
     def propagate_encounter(self, dt):
         """Advance the encounter vessel by one timestep."""
@@ -71,13 +120,14 @@ class State:
     def reset(self):
         """Reset all episode state. Called at the start of each episode."""
         self.encounter_vessel_eta = None
-        self.encounter_speed = None
+        self._encounter_speed = None
         self._encounter_active = False
         self._active_maneuver_spec = None
         self._cached_mask = np.ones(self._n_actions, dtype=bool)
         self.sim_state = None
-        self.goal = None
-        self.nominal_path_start = None
+        self.encounter_scenario = None
+        self._goal = None
+        self._nominal_path_start = None
         self.history_ego = []
         self.history_enc = []
         self.history_rob = []

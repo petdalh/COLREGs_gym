@@ -1,5 +1,6 @@
 from gym.action.action import Action
 from gym.callback.episode_logger import EpisodeLogger
+from gym.encounter_scenario import EncounterScenario
 from gym.observation.observation import Observation
 from gym.reward.reward import Reward
 from gym.robustness.robustness import Robustness
@@ -32,17 +33,12 @@ class COLREGsGym(MCGym):
         )
 
         self.vessel_model = vessel_model
+        self.encounter_scenario = EncounterScenario(vessel_model)
         self.vessel_action = Action(config)
         self.action_space = spaces.Discrete(self.vessel_action.n_actions)
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(10,), dtype=np.float32
         )
-        self.encounter_type = None
-        self._encounter_init = None
-        self.encounter_vessel_eta = None
-        self.encounter_speed = 0.0
-        self.encounter_radius = 1.0
-        self.encounter_max_time = None
         self.spec = None
         self.ellipsoids_Ab_dict = None
         self.robustness_sampling_rate = 10
@@ -79,8 +75,30 @@ class COLREGsGym(MCGym):
         self.callback = EpisodeLogger()
         self.decision_interval = 5
 
+    def set_encounter(
+        self,
+        start_position,
+        wave_conditions,
+        encounter_type="crossing",
+        separation=30.0,
+        target_speed=0.3,
+        goal_ahead_distance=25.0,
+        collision_radius=1.0,
+        simtime=150.0,
+    ):
+        self.encounter_scenario.set_encounter(
+            start_position=start_position,
+            wave_conditions=wave_conditions,
+            encounter_type=encounter_type,
+            separation=separation,
+            target_speed=target_speed,
+            goal_ahead_distance=goal_ahead_distance,
+            collision_radius=collision_radius,
+            simtime=simtime,
+        )
+        self.encounter_scenario.apply(self)
+
     def step(self, action):
-        self._step_count += 1
         terminated = False
         truncated = False
         info = {}
@@ -98,6 +116,7 @@ class COLREGsGym(MCGym):
                 action, self._obs(), self.state.sim_state, self._controller
             )
             _, _, terminated, truncated, info = super().step(tau)
+            self._step_count += 1
 
             self.state.update_sim(self.get_state())
             self.state.record()
@@ -141,7 +160,7 @@ class COLREGsGym(MCGym):
         if terminated:
             return True, False, info
 
-        truncated, info = self.truncation.is_truncated(self)
+        truncated, info = self.truncation.is_truncated(self.state, self.curr_sim_time)
         if truncated:
             return False, True, info
 
@@ -158,20 +177,18 @@ class COLREGsGym(MCGym):
         self.history_rob = self.state.history_rob
         self.history_in_radius = self.state.history_in_radius
 
-        if self._encounter_init is not None:
-            self.encounter_vessel_eta = self._encounter_init.copy()
+        if self.encounter_scenario._encounter_init is not None:
+            self.state.encounter_vessel_eta = self.encounter_scenario._encounter_init.copy()
         else:
-            self.encounter_vessel_eta = None
+            self.state.encounter_vessel_eta = None
 
-        self.state.encounter_vessel_eta = self.encounter_vessel_eta
-        self.state.encounter_speed = getattr(self, "encounter_speed", None)
-        self.state.goal = getattr(self, "goal", None)
-        self.state.nominal_path_start = getattr(self, "_nominal_path_start", None)
+        self.encounter_scenario.apply_to_state(self.state, self.state.encounter_vessel_eta)
+        self.state.encounter_scenario = self.encounter_scenario
         self.state.update_sim(self.get_state())
 
         state = self.get_state()
-        if self.state.goal is not None:
-            gn, ge = self.state.goal[:2]
+        if self.encounter_scenario.goal is not None:
+            gn, ge = self.encounter_scenario.goal[:2]
             self.reward.prev_dist_to_goal = np.hypot(
                 gn - state["eta"][0], ge - state["eta"][1]
             )
