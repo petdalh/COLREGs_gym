@@ -3,10 +3,11 @@ import os
 from pathlib import Path
 
 from sb3_contrib import MaskablePPO
-from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback
 from stable_baselines3.common.monitor import Monitor
 
 from gym.colregs_gym import COLREGsGym
+from gym.callback import ColregsMonitorCallback
 
 try:
     from pacstl.core.factory import create as create_spec
@@ -19,7 +20,7 @@ except ImportError as exc:
 
 def configure_monitoring(env, sampling_rate):
     try:
-        from utils.reachable_sets import preload_reachable_sets, select_reachable_set
+        from gym.utils.reachable_sets import preload_reachable_sets, select_reachable_set
     except ImportError:
         return False
 
@@ -69,7 +70,7 @@ def make_env(
                 "without pacSTL masking."
             )
 
-    return Monitor(env)
+    return env
 
 
 def build_model(env, checkpoint_path: Path, tensorboard_log: str | None):
@@ -129,6 +130,18 @@ def main():
         sampling_rate=args.sampling_rate,
         enable_monitoring=not args.disable_monitoring,
     )
+    env = Monitor(env)
+
+    eval_env = make_env(
+        dt=args.dt,
+        grid_width=args.grid_width,
+        grid_height=args.grid_height,
+        monitoring_radius=args.monitoring_radius,
+        monitoring_radius_safety_factor=args.monitoring_safety_factor,
+        robustness_margin=args.robustness_margin,
+        sampling_rate=args.sampling_rate,
+        enable_monitoring=not args.disable_monitoring,
+    )
 
     model = build_model(env, model_path, args.tensorboard_log)
 
@@ -137,10 +150,16 @@ def main():
         save_path=str(checkpoint_dir),
         name_prefix="colregs_maskable_ppo",
     )
+    monitor_callback = ColregsMonitorCallback(
+        eval_env=eval_env,
+        plot_dir="plots",
+        plot_every_episodes=1,
+    )
+    callback = CallbackList([checkpoint_callback, monitor_callback])
 
     model.learn(
         total_timesteps=args.timesteps,
-        callback=checkpoint_callback,
+        callback=callback,
         reset_num_timesteps=False,
     )
 
