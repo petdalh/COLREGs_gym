@@ -1,13 +1,14 @@
-import numpy as np
-from gymnasium import spaces
-
-from mchorcrux.numpy_core.gym.mc_gym_csad_numpy import MCGym
-
 from gym.action.action import Action
+from gym.callback.episode_logger import EpisodeLogger
+from gym.observation.observation import Observation
+from gym.reward.reward import Reward
+from gym.robustness.robustness import Robustness
+from gym.state import State
+from gym.termination import Termination
+from gym.truncation import Truncation
 from gym.utils.config import load_config
-from gym.utils.geometry import propagate_vessel, within_monitoring_radius
-from gym.utils.robustness import evaluate_robustness
-
+from gymnasium import spaces
+from mchorcrux.numpy_core.gym.mc_gym_csad_numpy import MCGym
 
 
 class COLREGsGym(MCGym):
@@ -26,104 +27,63 @@ class COLREGsGym(MCGym):
 
         self.vessel_action = Action(config)
         self.action_space = spaces.Discrete(self.vessel_action.n_actions)
+        self.state = State(
+            monitoring_radius=self.monitoring_radius,
+            n_actions=self.vessel_action.n_actions,
+        )
+        self.observation = Observation(config)
+        self.reward = Reward(config)
+        self.robustness = Robustness(
+            spec=self.spec,
+            ellipsoids_Ab_dict=self.ellipsoids_Ab_dict,
+            sampling_rate=self.robustness_sampling_rate,
+        )
+        self.termination = Termination()
+        self.truncation = Truncation()
+        self.callback = EpisodeLogger()
+        self.decision_interval = 5
 
     def step(self, action):
-        total_reward = 0.0
-        decision_interval = 5
-
-        if self._step_count % 100 == 0:
-            print(f"Step {self._step_count}")
-
+        self._step_count += 1
         terminated = False
         truncated = False
         info = {}
 
-        for sub in range(decision_interval):
-            if self.encounter_vessel_eta is not None:
-                self.encounter_vessel_eta = propagate_vessel(
-                    vessel_eta=self.encounter_vessel_eta,
-                    encounter_speed=self.encounter_speed,
-                    dt=self.dt,
-                )
+        for _ in range(self.decision_interval):
+            self.state.propagate_encounter(self.dt)
+            self.state.update_sim(self.get_state())
 
-            # Check for divergence BEFORE computing obs/controller.
-            # A state that is finite in float64 but overflows float32
-            # will corrupt the observation, controller input, and torques.
-            state = self.get_state()
-            if not np.all(np.isfinite(state["eta"])) or not np.all(
-                np.isfinite(state["nu"])
-            ):
-                print(f"[Divergence] Non-finite state at step {self._step_count}")
-                terminated = True
-                info = {"reason": "diverged"}
+            terminated, term_info = self.termination.is_terminated(self.state)
+            if terminated:
+                info.update(term_info)
                 break
 
-            obs = self._obs()
-            psi_d, u_d = self._decode_discrete_actions(action, obs)
-            tau = self._controller.compute_action_minimal(self.get_state(), psi_d, u_d)
+            tau = self.vessel_action.compute(
+                action, self._obs(), self.state.sim_state, self._controller
+            )
+            _, _, terminated, truncated, info = super().step(tau)
 
-            # Also catch states that are finite but too large for float32
-            if np.any(np.abs(state["eta"][:2]) > 1e6) or np.any(
-                np.abs(state["nu"]) > 1e6
-            ):
-                print(
-                    f"[Divergence] State magnitude too large at step {self._step_count}"
-                )
-                terminated = True
-                info = {"reason": "diverged"}
-                break
-
-            _, reward, terminated, truncated, info = super().step(tau)
-            self._step_count += 1
-            total_reward += reward
-
-            # Record positions
-            state = self.get_state()
-            self.history_ego.append([state["eta"][0], state["eta"][1]])
-            if self.encounter_vessel_eta is not None:
-                self.history_enc.append(
-                    [self.encounter_vessel_eta[0], self.encounter_vessel_eta[1]]
-                )
+            self.state.update_sim(self.get_state())
+            self.state.record()
 
             if terminated or truncated:
                 break
 
-        # pacSTL evaluation — only if within monitoring radius
-        robustness = None
-        in_radius = within_monitoring_radius(
-            self.encounter_vessel_eta, self.monitoring_radius, self.get_state()
-        )
+        robustness = self.robustness.evaluate(self.state, self._step_count)
+        if robustness is not None:
+            info["robustness"] = robustness
+            self._update_encounter_state(robustness)
 
-        if self._step_count % self.robustness_sampling_rate == 0:
-            if in_radius:
-                robustness = evaluate_robustness(
-                    spec=self.spec,
-                    ellipsoids_Ab_dict=self.ellipsoids_Ab_dict,
-                    encounter_vessel_eta=self.encounter_vessel_eta,
-                    state=self.get_state(),
-                    encounter_speed=self.encounter_speed,
-                )
-                info["robustness"] = robustness
-                self._update_encounter_state(robustness)
-            else:
-                # Outside monitoring radius: clear any active encounter state
-                if self._encounter_active:
-                    self._encounter_active = False
-                    self._active_maneuver_spec = None
-                    self._cached_mask = np.ones(
-                        len(self.action_space["size"]), dtype=bool
-                    )
+        obs = self.observation.get(self.state)
+        reward = self.reward.get_reward(self.state)
 
-        # Record robustness and radius status
-        self.history_rob.append(robustness)
-        self.history_in_radius.append(in_radius)
-
-        self._episode_reward += float(total_reward)
         if terminated or truncated:
-            reason = info.get("reason", "goal_reached")
-            status = "Terminated" if terminated else "Truncated"
-            print(
-                f"--- Episode {status} | Reason: {reason} | Reward: {self._episode_reward:.2f} ---"
-            )
+            self.callback.on_episode_end(info, terminated, self.reward)
 
-        return self._obs(), float(total_reward), terminated, truncated, info
+        return obs, reward, terminated, truncated, info
+
+    def compute_reward(self, action, prev_action):
+        return self.reward.get_reward(self.state)
+
+    def _obs(self):
+        return self.observation.get(self.state)

@@ -1,5 +1,5 @@
 import yaml
-import numpy as np
+
 
 def load_config(path: str) -> dict:
     with open(path, "r") as f:
