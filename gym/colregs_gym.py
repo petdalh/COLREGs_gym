@@ -94,6 +94,8 @@ class COLREGsGym(McGym):
             mask_recompute_interval=monitoring_cfg.get("mask_recompute_interval", 2),
             vessel_model=vessel_model,
             sim_dt=sim_dt,
+            heading_offsets=self.vessel_action.heading_offsets,
+            speed_multipliers=self.vessel_action.speed_multipliers,
         )
         self.state = State(
             monitoring_radius=monitoring_radius,
@@ -186,7 +188,6 @@ class COLREGsGym(McGym):
         self.robustness.spec = spec
         self.robustness.ellipsoids_Ab_dict = ellipsoids_Ab_dict
         self.robustness.sampling_rate = sampling_rate
-        self.masking.configure_monitoring(self, spec, ellipsoids_Ab_dict)
     
     def _check_termination(self, boat_pos):
         terminated, truncated, info = super()._check_termination(boat_pos)
