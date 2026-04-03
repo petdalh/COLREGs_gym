@@ -7,11 +7,14 @@ class EncounterScenario:
         vessel_model,
         maneuver_horizon=10.0,
         monitoring_radius_safety_factor=2.0,
+        masking_configuration=None,
     ):
         self.v_min = getattr(vessel_model, "v_min", None)
         self.v_max = getattr(vessel_model, "v_max", None)
         self.maneuver_horizon = maneuver_horizon
         self.monitoring_radius_safety_factor = monitoring_radius_safety_factor
+        self.default_masking_configuration = dict(masking_configuration or {})
+        self.masking_configuration = dict(self.default_masking_configuration)
         self.start_position = None
         self.wave_conditions = None
         self.encounter_type = None
@@ -34,6 +37,7 @@ class EncounterScenario:
         goal_ahead_distance=25.0,
         collision_radius=1.0,
         simtime=150.0,
+        masking_configuration=None,
     ):
         if self.v_max is not None and target_speed > self.v_max:
             raise ValueError(
@@ -67,6 +71,10 @@ class EncounterScenario:
         self.goal_ahead_distance = goal_ahead_distance
         self.collision_radius = float(collision_radius)
         self.simtime = float(simtime)
+        self.masking_configuration = {
+            **self.default_masking_configuration,
+            **dict(masking_configuration or {}),
+        }
         self.nominal_path_start = np.array([own_n, own_e], dtype=float)
         self._encounter_init = np.array([t_n, t_e, np.deg2rad(t_psi_deg)])
         self.goal = (goal_n, goal_e, 1.0)

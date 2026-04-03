@@ -39,6 +39,7 @@ class COLREGsGym(McGym):
         env_cfg = config.get("environment_configuration", config)
         action_cfg = env_cfg.get("action_configuration", config)
         encounter_cfg = env_cfg.get("encounter_configuration", {})
+        masking_cfg = dict(env_cfg.get("masking_configuration", {}))
         monitoring_cfg = env_cfg.get("monitoring_configuration", {})
         reward_cfg = env_cfg.get("reward_configuration", {})
 
@@ -50,7 +51,12 @@ class COLREGsGym(McGym):
             if maneuver_horizon is not None
             else encounter_cfg.get("maneuver_horizon", 10.0)
         )
-        sim_dt = sim_dt if sim_dt is not None else env_cfg.get("sim_dt", dt)
+        sim_dt = (
+            sim_dt
+            if sim_dt is not None
+            else masking_cfg.get("sim_dt", env_cfg.get("sim_dt", dt))
+        )
+        masking_cfg["sim_dt"] = sim_dt
         monitoring_radius = (
             monitoring_radius
             if monitoring_radius is not None
@@ -79,6 +85,7 @@ class COLREGsGym(McGym):
             vessel_model,
             maneuver_horizon=maneuver_horizon,
             monitoring_radius_safety_factor=monitoring_radius_safety_factor,
+            masking_configuration=masking_cfg,
         )
         self.vessel_action = Action(action_cfg)
         self.action_space = spaces.Discrete(self.vessel_action.n_actions)
@@ -92,10 +99,9 @@ class COLREGsGym(McGym):
             n_actions=self.vessel_action.n_actions,
             robustness_margin=robustness_margin,
             mask_recompute_interval=monitoring_cfg.get("mask_recompute_interval", 2),
+            action=self.vessel_action,
             vessel_model=vessel_model,
-            sim_dt=sim_dt,
-            heading_offsets=self.vessel_action.heading_offsets,
-            speed_multipliers=self.vessel_action.speed_multipliers,
+            action_masking_config=masking_cfg,
         )
         self.state = State(
             monitoring_radius=monitoring_radius,
@@ -122,6 +128,7 @@ class COLREGsGym(McGym):
         goal_ahead_distance=25.0,
         collision_radius=1.0,
         simtime=150.0,
+        masking_configuration=None,
     ):
         self.encounter_scenario.set_encounter(
             start_position=start_position,
@@ -132,7 +139,9 @@ class COLREGsGym(McGym):
             goal_ahead_distance=goal_ahead_distance,
             collision_radius=collision_radius,
             simtime=simtime,
+            masking_configuration=masking_configuration,
         )
+        self.masking.configure_for_scenario(self.encounter_scenario)
         self.encounter_scenario.apply(self)
 
     def step(self, action):

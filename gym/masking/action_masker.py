@@ -8,31 +8,35 @@ from gym.utils.robustness import extract_robustness_upper
 
 
 class ActionMasker:
-    def __init__(
-        self,
-        v_max,
-        r_max,
-        sim_dt,
-        heading_offsets,
-        speed_multipliers,
-        k_heading=1.0,
-        k_speed=0.5,
-        a_max=0.1,
-    ):
-        self.v_max = float(v_max)
-        self.r_max = float(r_max)
-        self.sim_dt = float(sim_dt)
-        self.heading_offsets = np.asarray(heading_offsets, dtype=float)
-        self.speed_multipliers = np.asarray(speed_multipliers, dtype=float)
+    def __init__(self, action, vessel_model=None, config=None):
+        self.heading_offsets = np.asarray(action.heading_offsets, dtype=float)
+        self.speed_multipliers = np.asarray(action.speed_multipliers, dtype=float)
         self.n_actions = len(self.heading_offsets) * len(self.speed_multipliers)
-        self.k_heading = float(k_heading)
-        self.k_speed = float(k_speed)
-        self.a_max = float(a_max)
+        self.v_max = np.inf
+        self.r_max = np.inf
+        self.sim_dt = 0.5
+        self.k_heading = 1.0
+        self.k_speed = 0.5
+        self.a_max = 0.1
+        self.configure(config=config, vessel_model=vessel_model)
 
         self.spec = None
         self.ellipsoids_Ab_dict = None
         self.tube_time_steps = []
         self.reachable_tube = {}
+
+    def configure(self, config=None, vessel_model=None):
+        config = dict(config or {})
+
+        v_max = config.get("v_max", getattr(vessel_model, "v_max", np.inf))
+        r_max = config.get("r_max", getattr(vessel_model, "yaw_dot_max", np.inf))
+
+        self.v_max = np.inf if v_max is None else float(v_max)
+        self.r_max = np.inf if r_max is None else float(r_max)
+        self.sim_dt = float(config.get("sim_dt", self.sim_dt))
+        self.k_heading = float(config.get("k_heading", self.k_heading))
+        self.k_speed = float(config.get("k_speed", self.k_speed))
+        self.a_max = float(config.get("a_max", self.a_max))
 
     def update_scenario(self, spec, ellipsoids_Ab_dict):
         self.spec = spec

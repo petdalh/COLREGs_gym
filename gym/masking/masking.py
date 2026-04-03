@@ -10,32 +10,35 @@ class Masking:
         n_actions,
         robustness_margin=1.0,
         mask_recompute_interval=2,
+        action=None,
         vessel_model=None,
-        sim_dt=0.5,
-        heading_offsets=None,
-        speed_multipliers=None,
+        action_masking_config=None,
     ):
         self.n_actions = n_actions
         self.robustness_margin = robustness_margin
         self.mask_recompute_interval = mask_recompute_interval
         self._steps_since_mask_update = 0
-
-        v_max = getattr(vessel_model, "v_max", None)
-        r_max = getattr(vessel_model, "yaw_dot_max", None)
-
+        self._default_action_masking_config = dict(action_masking_config or {})
+        self._vessel_model = vessel_model
         self._action_masker = ActionMasker(
-            v_max=v_max,
-            r_max=r_max,
-            sim_dt=sim_dt,
-            heading_offsets=heading_offsets,
-            speed_multipliers=speed_multipliers,
+            action=action,
+            vessel_model=vessel_model,
+            config=self._default_action_masking_config,
         )
 
     def _default_mask(self):
         return np.ones(self.n_actions, dtype=bool)
 
+    def configure_for_scenario(self, encounter_scenario):
+        scenario_cfg = getattr(encounter_scenario, "masking_configuration", None)
+        self._action_masker.configure(
+            config=scenario_cfg or self._default_action_masking_config,
+            vessel_model=self._vessel_model,
+        )
+
     def reset(self, env):
         self._steps_since_mask_update = 0
+        self.configure_for_scenario(env.encounter_scenario)
         if env.state is not None:
             env.state._encounter_active = False
             env.state._active_maneuver_spec = None
