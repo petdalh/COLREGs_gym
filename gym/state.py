@@ -15,6 +15,7 @@ class State:
         self._n_actions = n_actions
 
         self.sim_state = None
+        self.in_monitoring_radius = None
 
         self.encounter_scenario = None
         self._goal = None
@@ -28,6 +29,7 @@ class State:
     def update_sim(self, sim_state):
         """Store the latest sim state snapshot from get_state()."""
         self.sim_state = sim_state
+        self.in_monitoring_radius = None
 
     @property
     def position(self):
@@ -125,6 +127,7 @@ class State:
         self._active_maneuver_spec = None
         self._cached_mask = np.ones(self._n_actions, dtype=bool)
         self.sim_state = None
+        self.in_monitoring_radius = None
         self.encounter_scenario = None
         self._goal = None
         self._nominal_path_start = None

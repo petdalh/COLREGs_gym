@@ -1,6 +1,5 @@
 import numpy as np
 
-
 class Observation:
     def __init__(self, config):
         self.config = config

@@ -8,18 +8,21 @@ class Robustness:
         self.ellipsoids_Ab_dict = ellipsoids_Ab_dict
         self.sampling_rate = sampling_rate
 
-    def evaluate(self, state, sim_step_count):
+    def evaluate(self, state, sim_step_count, in_radius=None):
         """
         Evaluate robustness if within sampling rate and monitoring radius.
 
         Returns the robustness value or None. Also updates state encounter
         tracking and records robustness/radius to history.
         """
-        in_radius = within_monitoring_radius(
-            state.encounter_vessel_eta,
-            state.monitoring_radius,
-            state.sim_state,
-        )
+        if in_radius is None:
+            in_radius = state.in_monitoring_radius
+        if in_radius is None:
+            in_radius = within_monitoring_radius(
+                state.encounter_vessel_eta,
+                state.monitoring_radius,
+                state.sim_state,
+            )
 
         robustness = None
         if sim_step_count % self.sampling_rate == 0:

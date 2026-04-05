@@ -82,11 +82,16 @@ class Masking:
         if not env.state._encounter_active or env.state._active_maneuver_spec is None:
             return self._default_mask()
 
-        if not within_monitoring_radius(
-            env.state.encounter_vessel_eta,
-            env.state.monitoring_radius,
-            env.get_state(),
-        ):
+        in_radius = env.state.in_monitoring_radius
+        if in_radius is None:
+            in_radius = within_monitoring_radius(
+                env.state.encounter_vessel_eta,
+                env.state.monitoring_radius,
+                env.state.sim_state,
+            )
+            env.state.in_monitoring_radius = in_radius
+
+        if not in_radius:
             env.state._encounter_active = False
             env.state._active_maneuver_spec = None
             env.state._cached_mask = self._default_mask()

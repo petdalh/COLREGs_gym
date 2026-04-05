@@ -10,7 +10,7 @@ class Reward:
         self.prev_dist_to_goal = None
         self.episode_total = 0.0
 
-    def get_reward(self, state):
+    def get_reward(self, state, in_radius=None):
         """
         Compute reward from state.
 
@@ -33,9 +33,12 @@ class Reward:
         )
         self.prev_dist_to_goal = dist
 
-        in_radius = within_monitoring_radius(
-            state.encounter_vessel_eta, state.monitoring_radius, state.sim_state
-        )
+        if in_radius is None:
+            in_radius = state.in_monitoring_radius
+        if in_radius is None:
+            in_radius = within_monitoring_radius(
+                state.encounter_vessel_eta, state.monitoring_radius, state.sim_state
+            )
         if not in_radius:
             cte = cross_track_error(pos_xy, state.nominal_path_start, goal[:2])
             reward = progress - self.w_cte * min(abs(cte), self.cte_clip)

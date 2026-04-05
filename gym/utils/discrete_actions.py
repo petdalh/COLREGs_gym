@@ -1,5 +1,4 @@
 import numpy as np
-
 from mchorcrux.numpy_core.controllers.adaptive_seakeeping import heading_to_goal
 
 

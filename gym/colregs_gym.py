@@ -9,6 +9,7 @@ from gym.state import State
 from gym.termination import Termination
 from gym.truncation import Truncation
 from gym.utils.config import resolve_config
+from gym.utils.geometry import within_monitoring_radius
 
 from gymnasium import spaces
 
@@ -118,6 +119,16 @@ class COLREGsGym(McGym):
         self.callback = EpisodeLogger()
         self.decision_interval = env_cfg.get("decision_interval", 5)
 
+    def _sync_runtime_state(self):
+        sim_state = self.get_state()
+        self.state.update_sim(sim_state)
+        self.state.in_monitoring_radius = within_monitoring_radius(
+            self.state.encounter_vessel_eta,
+            self.state.monitoring_radius,
+            sim_state,
+        )
+        return sim_state
+
     def set_encounter(
         self,
         start_position,
@@ -151,7 +162,7 @@ class COLREGsGym(McGym):
 
         for _ in range(self.decision_interval):
             self.state.propagate_encounter(self.dt)
-            self.state.update_sim(self.get_state())
+            sim_state = self._sync_runtime_state()
 
             terminated, term_info = self.termination.is_terminated(self.state)
             if terminated:
@@ -159,24 +170,31 @@ class COLREGsGym(McGym):
                 break
 
             tau = self.vessel_action.compute(
-                action, self._obs(), self.state.sim_state, self._controller
+                action, self._obs(), sim_state, self._controller
             )
             _, _, terminated, truncated, info = super().step(tau)
             self._step_count += 1
 
-            self.state.update_sim(self.get_state())
+            self._sync_runtime_state()
             self.state.record()
 
             if terminated or truncated:
                 break
 
-        robustness = self.robustness.evaluate(self.state, self._step_count)
+        robustness = self.robustness.evaluate(
+            self.state,
+            self._step_count,
+            in_radius=self.state.in_monitoring_radius,
+        )
         if robustness is not None:
             info["robustness"] = robustness
             self._update_encounter_state(robustness)
 
         obs = self.observation.get(self.state)
-        reward = self.reward.get_reward(self.state)
+        reward = self.reward.get_reward(
+            self.state,
+            in_radius=self.state.in_monitoring_radius,
+        )
 
         if terminated or truncated:
             self.callback.on_episode_end(info, terminated, self.reward)
@@ -229,9 +247,7 @@ class COLREGsGym(McGym):
 
         self.encounter_scenario.apply_to_state(self.state, self.state.encounter_vessel_eta)
         self.state.encounter_scenario = self.encounter_scenario
-        self.state.update_sim(self.get_state())
-
-        state = self.get_state()
+        state = self._sync_runtime_state()
         if self.encounter_scenario.goal is not None:
             gn, ge = self.encounter_scenario.goal[:2]
             self.reward.prev_dist_to_goal = np.hypot(
