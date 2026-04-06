@@ -5,6 +5,7 @@ from pathlib import Path
 from sb3_contrib import MaskablePPO
 from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback
 from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.vec_env import SubprocVecEnv
 
 from gym.colregs_gym import COLREGsGym
 from gym.callback import ColregsMonitorCallback
@@ -36,7 +37,7 @@ def configure_monitoring(env, monitoring_cfg):
     return True
 
 
-def make_env(config, enable_monitoring):
+def create_env(config, enable_monitoring):
     env_cfg = config.get("environment_configuration", {})
     encounter_cfg = dict(env_cfg.get("encounter_configuration", {}))
     monitoring_cfg = env_cfg.get("monitoring_configuration", {})
@@ -58,6 +59,13 @@ def make_env(config, enable_monitoring):
             )
 
     return env
+
+
+def make_env(config, enable_monitoring):
+    def _init():
+        return Monitor(create_env(config, enable_monitoring=enable_monitoring))
+
+    return _init
 
 
 def build_model(env, checkpoint_path: Path, train_cfg):
@@ -102,6 +110,8 @@ def main():
     args = parse_args()
     config = load_config(args.config)
     train_cfg = config.get("training_configuration", {})
+    n_envs = int(train_cfg.get("n_envs", 4))
+    vec_env_start_method = train_cfg.get("vec_env_start_method", "spawn")
 
     checkpoint_dir = Path(train_cfg.get("checkpoint_dir", "checkpoints/ppo_mask"))
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -117,17 +127,23 @@ def main():
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
         Path(tensorboard_log).mkdir(parents=True, exist_ok=True)
 
-    env = make_env(config, enable_monitoring=not args.disable_monitoring)
-    env = Monitor(env)
+    env = SubprocVecEnv(
+        [
+            make_env(config, enable_monitoring=not args.disable_monitoring)
+            for _ in range(n_envs)
+        ],
+        start_method=vec_env_start_method,
+    )
 
-    eval_env = make_env(config, enable_monitoring=not args.disable_monitoring)
+    eval_env = create_env(config, enable_monitoring=not args.disable_monitoring)
 
     train_cfg = dict(train_cfg)
     train_cfg["tensorboard_log"] = tensorboard_log
     model = build_model(env, model_path, train_cfg)
 
+    checkpoint_freq = max(1, train_cfg.get("checkpoint_freq", 10000) // n_envs)
     checkpoint_callback = CheckpointCallback(
-        save_freq=train_cfg.get("checkpoint_freq", 10000),
+        save_freq=checkpoint_freq,
         save_path=str(checkpoint_dir),
         name_prefix="colregs_maskable_ppo",
     )
@@ -146,6 +162,7 @@ def main():
 
     model.save(str(model_path))
     env.close()
+    eval_env.close()
 
 
 if __name__ == "__main__":
