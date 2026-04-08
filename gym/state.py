@@ -25,6 +25,8 @@ class State:
         self.history_enc = []
         self.history_rob = []
         self.history_in_radius = []
+        self.history_speed_multiplier = []
+        self._current_speed_multiplier = np.nan
 
     def update_sim(self, sim_state):
         """Store the latest sim state snapshot from get_state()."""
@@ -107,11 +109,19 @@ class State:
         self.history_ego.append(self.sim_state["eta"][:2].tolist())
         if self.encounter_vessel_eta is not None:
             self.history_enc.append(self.encounter_vessel_eta[:2].tolist())
+        self.history_speed_multiplier.append(self._current_speed_multiplier)
 
     def record_robustness(self, robustness, in_radius):
         """Append robustness and radius status to history."""
         self.history_rob.append(robustness)
         self.history_in_radius.append(in_radius)
+
+    def set_current_speed_multiplier(self, speed_multiplier):
+        """Cache the active speed multiplier for the next record() call."""
+        if speed_multiplier is None:
+            self._current_speed_multiplier = np.nan
+        else:
+            self._current_speed_multiplier = float(speed_multiplier)
 
     def clear_encounter(self):
         """Reset encounter state when vessel leaves monitoring radius."""
@@ -135,3 +145,5 @@ class State:
         self.history_enc = []
         self.history_rob = []
         self.history_in_radius = []
+        self.history_speed_multiplier = []
+        self._current_speed_multiplier = np.nan

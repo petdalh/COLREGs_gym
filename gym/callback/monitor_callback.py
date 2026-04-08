@@ -63,6 +63,7 @@ class ColregsMonitorCallback(BaseCallback):
 
         plot_episode_trajectory(
             ego_traj=self.eval_env.history_ego,
+            ego_speed_traj=self.eval_env.history_speed_multiplier,
             enc_traj=self.eval_env.history_enc,
             goal=self.eval_env.goal[:2],
             dt=self.eval_env.dt,

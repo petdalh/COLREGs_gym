@@ -1,5 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.collections import LineCollection
+from matplotlib.colors import Normalize
 
 
 def plot_episode_trajectory(
@@ -11,13 +13,64 @@ def plot_episode_trajectory(
     dot_every: int = 40,
     collision_radius: float = 6.0,
     save_path: str | None = None,
+    ego_speed_traj: list | None = None,
 ):
     fig, ax = plt.subplots(figsize=(8, 8))
 
     ego_arr = np.array(ego_traj)
     enc_arr = np.array(enc_traj)
+    ego_speed_arr = None
+    if ego_speed_traj is not None:
+        ego_speed_arr = np.asarray(ego_speed_traj, dtype=float)
+        if len(ego_speed_arr) != len(ego_arr):
+            n = min(len(ego_arr), len(ego_speed_arr))
+            ego_arr = ego_arr[:n]
+            ego_speed_arr = ego_speed_arr[:n]
 
-    ax.plot(ego_arr[:, 1], ego_arr[:, 0], "b-", linewidth=1.5, label="Ego vessel")
+    if ego_speed_arr is not None and len(ego_arr) > 1:
+        segments = np.stack(
+            [
+                ego_arr[:-1, [1, 0]],
+                ego_arr[1:, [1, 0]],
+            ],
+            axis=1,
+        )
+        segment_values = ego_speed_arr[1:]
+        finite_mask = np.isfinite(segment_values) & np.all(
+            np.isfinite(segments.reshape(-1, 4)), axis=1
+        )
+
+        if np.any(finite_mask):
+            finite_values = segment_values[finite_mask]
+            vmin = float(np.min(finite_values))
+            vmax = float(np.max(finite_values))
+            if np.isclose(vmin, vmax):
+                vmax = vmin + 1e-9
+
+            norm = Normalize(vmin=vmin, vmax=vmax)
+            lc = LineCollection(
+                segments[finite_mask],
+                cmap="viridis",
+                norm=norm,
+                linewidth=2.0,
+                zorder=3,
+            )
+            lc.set_array(finite_values)
+            ax.add_collection(lc)
+            ax.plot([], [], color="black", linewidth=2.0, label="Ego vessel")
+            cbar = fig.colorbar(lc, ax=ax, pad=0.02)
+            cbar.set_label("Speed multiplier")
+        else:
+            ax.plot(
+                ego_arr[:, 1],
+                ego_arr[:, 0],
+                "b-",
+                linewidth=1.5,
+                label="Ego vessel",
+            )
+    else:
+        ax.plot(ego_arr[:, 1], ego_arr[:, 0], "b-", linewidth=1.5, label="Ego vessel")
+
     if len(enc_arr) > 0:
         ax.plot(enc_arr[:, 1], enc_arr[:, 0], "r-", linewidth=1.5, label="Obstacle vessel")
 
@@ -32,13 +85,35 @@ def plot_episode_trajectory(
     ego_dot_indices = np.arange(0, len(ego_arr), dot_every)
     enc_dot_indices = np.arange(0, len(enc_arr), dot_every) if len(enc_arr) > 0 else []
 
-    ax.scatter(
-        ego_arr[ego_dot_indices, 1],
-        ego_arr[ego_dot_indices, 0],
-        c="blue",
-        s=20,
-        zorder=5,
-    )
+    if ego_speed_arr is not None and np.any(np.isfinite(ego_speed_arr)):
+        dot_mask = np.isfinite(ego_speed_arr[ego_dot_indices])
+        ego_dot_indices_valid = ego_dot_indices[dot_mask]
+        if len(ego_dot_indices_valid) > 0:
+            speed_values = ego_speed_arr[ego_dot_indices_valid]
+            finite_speed_values = ego_speed_arr[np.isfinite(ego_speed_arr)]
+            vmin = float(np.min(finite_speed_values))
+            vmax = float(np.max(finite_speed_values))
+            if np.isclose(vmin, vmax):
+                vmax = vmin + 1e-9
+            norm = Normalize(vmin=vmin, vmax=vmax)
+            ax.scatter(
+                ego_arr[ego_dot_indices_valid, 1],
+                ego_arr[ego_dot_indices_valid, 0],
+                c=speed_values,
+                cmap="viridis",
+                norm=norm,
+                s=20,
+                zorder=5,
+            )
+    else:
+        ax.scatter(
+            ego_arr[ego_dot_indices, 1],
+            ego_arr[ego_dot_indices, 0],
+            c="blue",
+            s=20,
+            zorder=5,
+        )
+
     if len(enc_arr) > 0:
         ax.scatter(
             enc_arr[enc_dot_indices, 1],

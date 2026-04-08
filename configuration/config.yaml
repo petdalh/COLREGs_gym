@@ -44,7 +44,7 @@ environment_configuration:
   monitoring_configuration:
     monitoring_radius: 12.0
     monitoring_radius_safety_factor: 3.0
-    robustness_margin: 2.0
+    robustness_margin: 3.0
     robustness_sampling_rate: 5
     mask_recompute_interval: 2
 

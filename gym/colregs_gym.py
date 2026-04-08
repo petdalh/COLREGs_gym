@@ -159,6 +159,10 @@ class COLREGsGym(McGym):
         terminated = False
         truncated = False
         info = {}
+        speed_multiplier = self.vessel_action.speed_multipliers[
+            action % len(self.vessel_action.speed_multipliers)
+        ]
+        self.state.set_current_speed_multiplier(speed_multiplier)
 
         for _ in range(self.decision_interval):
             self.state.propagate_encounter(self.dt)
@@ -240,6 +244,7 @@ class COLREGsGym(McGym):
         self.history_enc = self.state.history_enc
         self.history_rob = self.state.history_rob
         self.history_in_radius = self.state.history_in_radius
+        self.history_speed_multiplier = self.state.history_speed_multiplier
 
         if self.encounter_scenario._encounter_init is not None:
             self.state.encounter_vessel_eta = self.encounter_scenario._encounter_init.copy()
