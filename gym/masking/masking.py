@@ -48,7 +48,7 @@ class Masking:
         self._action_masker.update_scenario(None, None, env.encounter_scenario)
 
     def update_encounter_state(self, env, robustness):
-        if robustness is None:
+        if not self.enabled or robustness is None:
             return
 
         was_active = env.state._encounter_active
