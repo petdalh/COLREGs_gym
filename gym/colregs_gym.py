@@ -96,6 +96,7 @@ class COLREGsGym(McGym):
             n_actions=self.vessel_action.n_actions,
             robustness_margin=robustness_margin,
             mask_recompute_interval=monitoring_cfg.get("mask_recompute_interval", 2),
+            enabled=monitoring_cfg.get("masking_enabled", True),
             action=self.vessel_action,
             vessel_model=vessel_model,
             action_masking_config=masking_cfg,

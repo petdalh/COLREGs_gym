@@ -10,6 +10,7 @@ class Masking:
         n_actions,
         robustness_margin=1.0,
         mask_recompute_interval=2,
+        enabled=True,
         action=None,
         vessel_model=None,
         action_masking_config=None,
@@ -17,6 +18,7 @@ class Masking:
         self.n_actions = n_actions
         self.robustness_margin = robustness_margin
         self.mask_recompute_interval = mask_recompute_interval
+        self.enabled = enabled
         self._steps_since_mask_update = 0
         self._default_action_masking_config = dict(action_masking_config or {})
         self._vessel_model = vessel_model
@@ -81,6 +83,8 @@ class Masking:
 
     def action_masks(self, env):
         env.state.fallback_used = False
+        if not self.enabled:
+            return self._default_mask()
         if not env.state._encounter_active or env.state._active_maneuver_spec is None:
             return self._default_mask()
 
