@@ -78,7 +78,6 @@ class ActionMasker:
         ego_state,
         encounter_vessel_eta,
         encounter_speed,
-        obs,
         robustness_margin,
         monitoring_radius,
         state=None,
@@ -101,7 +100,7 @@ class ActionMasker:
         for action_idx in candidates:
             psi_d, u_d = decode_discrete_action(
                 action_idx=action_idx,
-                obs=obs,
+                sim_state=ego_state,
                 heading_offsets=self.heading_offsets,
                 speed_multipliers=self.speed_multipliers,
             )

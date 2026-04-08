@@ -91,7 +91,7 @@ class COLREGsGym(McGym):
         self.vessel_action = Action(action_cfg)
         self.action_space = spaces.Discrete(self.vessel_action.n_actions)
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(10,), dtype=np.float32
+            low=-np.inf, high=np.inf, shape=(9,), dtype=np.float32
         )
         self.spec = None
         self.ellipsoids_Ab_dict = None
@@ -174,7 +174,7 @@ class COLREGsGym(McGym):
                 break
 
             tau = self.vessel_action.compute(
-                action, self._obs(), sim_state, self._controller
+                action, sim_state, self._controller
             )
             _, _, terminated, truncated, info = super().step(tau)
             self._step_count += 1
@@ -239,6 +239,7 @@ class COLREGsGym(McGym):
         obs, info = super().reset(seed=seed, options=options)
         self.state.reset()
         self.reward.reset()
+        self.observation.reset()
         self.masking.reset(self)
         self.history_ego = self.state.history_ego
         self.history_enc = self.state.history_enc

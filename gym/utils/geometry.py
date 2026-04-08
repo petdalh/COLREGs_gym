@@ -6,6 +6,24 @@ def wrap_angle(angle: float) -> float:
     return (angle + np.pi) % (2 * np.pi) - np.pi
 
 
+def relative_polar(
+    ego_pos: np.ndarray,
+    ego_psi: float,
+    target_pos: np.ndarray,
+) -> tuple[float, float]:
+    """Distance and ego-body-frame bearing to a target.
+
+    Returns (d, beta) where:
+      d    -- Euclidean distance [m]
+      beta -- bearing in ego body frame [rad], positive = starboard
+    """
+    delta = np.asarray(target_pos, dtype=float) - np.asarray(ego_pos, dtype=float)
+    d = np.hypot(delta[0], delta[1])
+    bearing_world = np.arctan2(delta[1], delta[0])  # delta[1]=De, delta[0]=Dn
+    beta = wrap_angle(bearing_world - ego_psi)
+    return float(d), float(beta)
+
+
 def to_obstacle_frame(
     ego_pos: np.ndarray,
     ego_vel: np.ndarray,

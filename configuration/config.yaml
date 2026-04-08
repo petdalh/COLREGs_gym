@@ -22,7 +22,7 @@ environment_configuration:
 
   action_configuration:
     heading_offsets_deg: [-15, -10, -5, 0, 5, 10, 15]
-    speed_multipliers: [0.7, 0.9, 1.0]
+    speed_multipliers: [0.7, 0.8, 0.9, 1.0]
 
   masking_configuration:
     sim_dt: 0.5

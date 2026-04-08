@@ -15,15 +15,15 @@ class Action:
         self.speed_multipliers = np.array(action_config["speed_multipliers"])
         self.n_actions = len(self.heading_offsets) * len(self.speed_multipliers)
 
-    def decode_discrete_actions(self, action_idx, obs, sim_state):
+    def decode_discrete_actions(self, action_idx, sim_state):
         return decode_discrete_action(
             action_idx=action_idx,
-            obs=obs,
+            sim_state=sim_state,
             heading_offsets=self.heading_offsets,
             speed_multipliers=self.speed_multipliers,
         )
 
-    def compute(self, action, obs, sim_state, controller):
+    def compute(self, action, sim_state, controller):
         """Decode the discrete action and compute the control torques."""
-        psi_d, u_d = self.decode_discrete_actions(action, obs, sim_state)
+        psi_d, u_d = self.decode_discrete_actions(action, sim_state)
         return controller.compute_action_minimal(sim_state, psi_d, u_d)

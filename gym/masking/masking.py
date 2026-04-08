@@ -115,7 +115,6 @@ class Masking:
             ego_state=env.get_state(),
             encounter_vessel_eta=env.state.encounter_vessel_eta,
             encounter_speed=env.state.encounter_speed,
-            obs=env._obs(),
             robustness_margin=robustness_margin,
             monitoring_radius=env.state.monitoring_radius,
         )
