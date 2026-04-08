@@ -14,6 +14,9 @@ class State:
         self._cached_mask = np.ones(n_actions, dtype=bool)
         self._n_actions = n_actions
 
+        self._current_heading_offset: float = 0.0
+        self.fallback_used: bool = False
+
         self.sim_state = None
         self.in_monitoring_radius = None
 
@@ -116,6 +119,10 @@ class State:
         self.history_rob.append(robustness)
         self.history_in_radius.append(in_radius)
 
+    def set_current_heading_offset(self, offset_rad: float):
+        """Cache the active heading offset (rad) for the next reward computation."""
+        self._current_heading_offset = float(offset_rad)
+
     def set_current_speed_multiplier(self, speed_multiplier):
         """Cache the active speed multiplier for the next record() call."""
         if speed_multiplier is None:
@@ -136,6 +143,8 @@ class State:
         self._encounter_active = False
         self._active_maneuver_spec = None
         self._cached_mask = np.ones(self._n_actions, dtype=bool)
+        self._current_heading_offset = 0.0
+        self.fallback_used = False
         self.sim_state = None
         self.in_monitoring_radius = None
         self.encounter_scenario = None

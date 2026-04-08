@@ -31,8 +31,6 @@ class COLREGsGym(McGym):
         monitoring_radius=None,
         monitoring_radius_safety_factor=None,
         robustness_margin=None,
-        w_cte=None,
-        cte_clip=None,
         config=None,
         **kwargs,
     ):
@@ -73,8 +71,6 @@ class COLREGsGym(McGym):
             if robustness_margin is not None
             else monitoring_cfg.get("robustness_margin", 1.0)
         )
-        w_cte = w_cte if w_cte is not None else reward_cfg.get("w_cte", 0.005)
-        cte_clip = cte_clip if cte_clip is not None else reward_cfg.get("cte_clip", 5.0)
 
         super().__init__(
             dt=dt, grid_width=grid_width, grid_height=grid_height, **kwargs
@@ -95,7 +91,7 @@ class COLREGsGym(McGym):
         )
         self.spec = None
         self.ellipsoids_Ab_dict = None
-        self.reward = Reward(w_cte=w_cte, cte_clip=cte_clip)
+        self.reward = Reward(config=reward_cfg)
         self.masking = Masking(
             n_actions=self.vessel_action.n_actions,
             robustness_margin=robustness_margin,
@@ -163,6 +159,8 @@ class COLREGsGym(McGym):
             action % len(self.vessel_action.speed_multipliers)
         ]
         self.state.set_current_speed_multiplier(speed_multiplier)
+        h_idx = action // len(self.vessel_action.speed_multipliers)
+        self.state.set_current_heading_offset(self.vessel_action.heading_offsets[h_idx])
 
         for _ in range(self.decision_interval):
             self.state.propagate_encounter(self.dt)
@@ -195,10 +193,11 @@ class COLREGsGym(McGym):
             self._update_encounter_state(robustness)
 
         obs = self.observation.get(self.state)
-        reward = self.reward.get_reward(
+        reward, reward_info = self.reward.get_reward(
             self.state,
             in_radius=self.state.in_monitoring_radius,
         )
+        info.update(reward_info)
 
         if terminated or truncated:
             self.callback.on_episode_end(info, terminated, self.reward)
@@ -220,7 +219,7 @@ class COLREGsGym(McGym):
         self.robustness.spec = spec
         self.robustness.ellipsoids_Ab_dict = ellipsoids_Ab_dict
         self.robustness.sampling_rate = sampling_rate
-    
+
     def _check_termination(self, boat_pos):
         terminated, truncated, info = super()._check_termination(boat_pos)
         if terminated or truncated:
@@ -234,7 +233,7 @@ class COLREGsGym(McGym):
             return False, True, info
 
         return False, False, {}
-    
+
     def reset(self, seed=None, options=None):
         obs, info = super().reset(seed=seed, options=options)
         self.state.reset()
@@ -254,15 +253,7 @@ class COLREGsGym(McGym):
 
         self.encounter_scenario.apply_to_state(self.state, self.state.encounter_vessel_eta)
         self.state.encounter_scenario = self.encounter_scenario
-        state = self._sync_runtime_state()
-        if self.encounter_scenario.goal is not None:
-            gn, ge = self.encounter_scenario.goal[:2]
-            self.reward.prev_dist_to_goal = np.hypot(
-                gn - state["eta"][0], ge - state["eta"][1]
-            )
-        else:
-            self.reward.prev_dist_to_goal = None
-        self.prev_dist_to_goal = self.reward.prev_dist_to_goal
+        self._sync_runtime_state()
         self._step_count = 0
         self._controller = MRACShipController(dt=self.dt)
         self._episode_reward = 0.0
@@ -271,9 +262,8 @@ class COLREGsGym(McGym):
 
         return self._obs(), {}
 
-
     def compute_reward(self, action, prev_action):
-        return self.reward.get_reward(self.state)
+        return self.reward.get_reward(self.state)[0]
 
     def _obs(self):
         return self.observation.get(self.state)

@@ -83,15 +83,16 @@ class ActionMasker:
         state=None,
     ):
         mask = np.ones(self.n_actions, dtype=bool)
+        is_fallback = False
 
         if self.spec is None or self.ellipsoids_Ab_dict is None:
-            return mask
+            return mask, is_fallback
 
         monitoring_state = ego_state if state is None else state
         if not within_monitoring_radius(
             encounter_vessel_eta, monitoring_radius, monitoring_state
         ):
-            return mask
+            return mask, is_fallback
 
         mask = np.zeros(self.n_actions, dtype=bool)
         action_robustness = np.full(self.n_actions, np.inf)
@@ -119,6 +120,7 @@ class ActionMasker:
                 mask[action_idx] = rob_upper < -robustness_margin
 
         if not mask.any():
+            is_fallback = True
             candidate_rob = {
                 idx: action_robustness[idx]
                 for idx in candidates
@@ -144,7 +146,7 @@ class ActionMasker:
                         mask[action_idx] = True
                 print("[ActionMask] Emergency fallback: starboard turns only")
 
-        return mask
+        return mask, is_fallback
 
     def _candidate_actions(self, situation):
         candidates = []

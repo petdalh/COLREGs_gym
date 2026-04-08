@@ -80,6 +80,7 @@ class Masking:
         self._action_masker.update_scenario(None, None, env.encounter_scenario)
 
     def action_masks(self, env):
+        env.state.fallback_used = False
         if not env.state._encounter_active or env.state._active_maneuver_spec is None:
             return self._default_mask()
 
@@ -110,7 +111,7 @@ class Masking:
         return env.state._cached_mask
 
     def _compute_mask(self, env, robustness_margin):
-        return self._action_masker.get_mask(
+        mask, is_fallback = self._action_masker.get_mask(
             situation=env.state.encounter_type,
             ego_state=env.get_state(),
             encounter_vessel_eta=env.state.encounter_vessel_eta,
@@ -118,3 +119,5 @@ class Masking:
             robustness_margin=robustness_margin,
             monitoring_radius=env.state.monitoring_radius,
         )
+        env.state.fallback_used = is_fallback
+        return mask
