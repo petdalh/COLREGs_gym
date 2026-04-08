@@ -1,9 +1,8 @@
-/old_rl_training/
 .DS_Store
-/ddpg/
-__pycache__/
+**/.DS_Store
+**/__pycache__/
 *.pyc
 *.pyo
-*.egg
-*.egg-info/
-/checkpoints/
+checkpoints/
+logs/
+plots/
