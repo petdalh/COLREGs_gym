@@ -1,4 +1,5 @@
 import numpy as np
+from pacstl.common.interfaces import PACReachableSet
 
 
 class EncounterScenario:
@@ -26,6 +27,9 @@ class EncounterScenario:
         self.nominal_path_start = None
         self._encounter_init = None
         self.goal = None
+        self.ellipsoids_Ab_dict = None
+        self.reachable_tube = {}
+        self.tube_time_steps = []
 
     def set_encounter(
         self,
@@ -78,6 +82,28 @@ class EncounterScenario:
         self.nominal_path_start = np.array([own_n, own_e], dtype=float)
         self._encounter_init = np.array([t_n, t_e, np.deg2rad(t_psi_deg)])
         self.goal = (goal_n, goal_e, 1.0)
+
+    def configure_monitoring_cache(self, ellipsoids_Ab_dict):
+        self.ellipsoids_Ab_dict = ellipsoids_Ab_dict
+
+        if ellipsoids_Ab_dict:
+            self.tube_time_steps = sorted(ellipsoids_Ab_dict.keys())
+            self.reachable_tube = {
+                time_step: PACReachableSet(
+                    time_step=time_step,
+                    A_matrix=raw_tuple[0],
+                    b_vector=raw_tuple[1],
+                    center=raw_tuple[2],
+                )
+                for time_step, raw_tuple in ellipsoids_Ab_dict.items()
+            }
+            print(
+                f"[ReachableTube] Built static cache with "
+                f"{len(self.tube_time_steps)} steps: {self.tube_time_steps}"
+            )
+        else:
+            self.reachable_tube = {}
+            self.tube_time_steps = []
 
     def apply(self, env):
         env.start_position = np.array(

@@ -212,6 +212,7 @@ class COLREGsGym(McGym):
             sampling_rate = self.robustness.sampling_rate
         self.spec = spec
         self.ellipsoids_Ab_dict = ellipsoids_Ab_dict
+        self.encounter_scenario.configure_monitoring_cache(ellipsoids_Ab_dict)
         self.robustness.spec = spec
         self.robustness.ellipsoids_Ab_dict = ellipsoids_Ab_dict
         self.robustness.sampling_rate = sampling_rate

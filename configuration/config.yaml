@@ -7,7 +7,7 @@ training_configuration:
   checkpoint_freq: 10000
   tensorboard_log: logs/colregs_ppo
   plot_dir: plots
-  plot_every_episodes: 10
+  plot_every_episodes: 2
   policy_net_arch: [128, 128]
   n_steps: 128
   batch_size: 32
@@ -17,12 +17,12 @@ environment_configuration:
   dt: 0.5
   grid_width: 25.0
   grid_height: 30.0
-  decision_interval: 5
+  decision_interval: 10
   sim_dt: 0.5
 
   action_configuration:
-    heading_offsets_deg: [-45, -30, -15, -10, -5, 0, 5, 10, 15, 30, 45]
-    speed_multipliers: [0.3, 0.5, 0.7, 0.9, 1.0]
+    heading_offsets_deg: [-15, -10, -5, 0, 5, 10, 15]
+    speed_multipliers: [0.7, 0.9, 1.0]
 
   masking_configuration:
     sim_dt: 0.5
@@ -34,16 +34,16 @@ environment_configuration:
     start_position: [1.5, 7.5, 0.0]
     wave_conditions: [0.05, 1.5, 0.0]
     encounter_type: crossing
-    separation: 6.0
+    separation: 14.0
     target_speed: 0.2
     goal_ahead_distance: 25.0
     collision_radius: 1.0
-    simtime: 250.0
+    simtime: 200.0
     maneuver_horizon: 10.0
 
   monitoring_configuration:
-    monitoring_radius: null
-    monitoring_radius_safety_factor: 2.0
+    monitoring_radius: 12.0
+    monitoring_radius_safety_factor: 3.0
     robustness_margin: 2.0
     robustness_sampling_rate: 5
     mask_recompute_interval: 2

@@ -9,6 +9,7 @@ def plot_episode_trajectory(
     dt: float = 0.5,
     episode_num: int = 1,
     dot_every: int = 40,
+    collision_radius: float = 6.0,
     save_path: str | None = None,
 ):
     fig, ax = plt.subplots(figsize=(8, 8))
@@ -46,6 +47,19 @@ def plot_episode_trajectory(
             s=20,
             zorder=5,
         )
+        # draw collision radius circle around each obstacle dot
+        for idx in enc_dot_indices:
+            circle = plt.Circle(
+                (enc_arr[idx, 1], enc_arr[idx, 0]),
+                radius=collision_radius,
+                color="red",
+                fill=False,
+                linewidth=0.6,
+                linestyle="--",
+                alpha=0.4,
+                zorder=4,
+            )
+            ax.add_patch(circle)
 
     for idx in ego_dot_indices:
         ax.annotate(

@@ -24,6 +24,7 @@ class ActionMasker:
         self.ellipsoids_Ab_dict = None
         self.tube_time_steps = []
         self.reachable_tube = {}
+        self._using_cached_tube = False
 
     def configure(self, config=None, vessel_model=None):
         config = dict(config or {})
@@ -38,11 +39,23 @@ class ActionMasker:
         self.k_speed = float(config.get("k_speed", self.k_speed))
         self.a_max = float(config.get("a_max", self.a_max))
 
-    def update_scenario(self, spec, ellipsoids_Ab_dict):
+    def update_scenario(self, spec, ellipsoids_Ab_dict, encounter_scenario=None):
         self.spec = spec
         self.ellipsoids_Ab_dict = ellipsoids_Ab_dict
 
-        if ellipsoids_Ab_dict:
+        if (
+            encounter_scenario is not None
+            and encounter_scenario.ellipsoids_Ab_dict is ellipsoids_Ab_dict
+            and encounter_scenario.reachable_tube
+        ):
+            self.tube_time_steps = list(encounter_scenario.tube_time_steps)
+            self.reachable_tube = encounter_scenario.reachable_tube
+            self._using_cached_tube = True
+            print(
+                f"[ReachableTube] ActionMasker reusing static cache with "
+                f"{len(self.tube_time_steps)} steps"
+            )
+        elif ellipsoids_Ab_dict:
             self.tube_time_steps = sorted(ellipsoids_Ab_dict.keys())
             self.reachable_tube = {
                 time_step: PACReachableSet(
@@ -53,9 +66,11 @@ class ActionMasker:
                 )
                 for time_step, raw_tuple in ellipsoids_Ab_dict.items()
             }
+            self._using_cached_tube = False
         else:
             self.tube_time_steps = []
             self.reachable_tube = {}
+            self._using_cached_tube = False
 
     def get_mask(
         self,
@@ -118,7 +133,9 @@ class ActionMasker:
                         mask[idx] = True
 
                 print(
-                    f"[ActionMask] Fallback: {mask.sum()} actions allowed "
+                    f"[ActionMask] Fallback after "
+                    f"{'cached-tube' if self._using_cached_tube else 'local-tube'} "
+                    f"verification: {mask.sum()} actions allowed "
                     f"(best robustness={min_rob:.2f})"
                 )
             else:

@@ -43,7 +43,7 @@ class Masking:
             env.state._encounter_active = False
             env.state._active_maneuver_spec = None
             env.state._cached_mask = self._default_mask()
-        self._action_masker.update_scenario(None, None)
+        self._action_masker.update_scenario(None, None, env.encounter_scenario)
 
     def update_encounter_state(self, env, robustness):
         if robustness is None:
@@ -60,6 +60,7 @@ class Masking:
                         self._action_masker.update_scenario(
                             env.state._active_maneuver_spec,
                             env.ellipsoids_Ab_dict,
+                            env.encounter_scenario,
                         )
                 if not was_active:
                     print(
@@ -76,7 +77,7 @@ class Masking:
         env.state._encounter_active = False
         env.state._active_maneuver_spec = None
         env.state._cached_mask = self._default_mask()
-        self._action_masker.update_scenario(None, None)
+        self._action_masker.update_scenario(None, None, env.encounter_scenario)
 
     def action_masks(self, env):
         if not env.state._encounter_active or env.state._active_maneuver_spec is None:
@@ -95,7 +96,7 @@ class Masking:
             env.state._encounter_active = False
             env.state._active_maneuver_spec = None
             env.state._cached_mask = self._default_mask()
-            self._action_masker.update_scenario(None, None)
+            self._action_masker.update_scenario(None, None, env.encounter_scenario)
             return env.state._cached_mask
 
         self._steps_since_mask_update += 1

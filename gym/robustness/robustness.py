@@ -10,6 +10,7 @@ class Robustness:
         self.spec = spec
         self.ellipsoids_Ab_dict = ellipsoids_Ab_dict
         self.sampling_rate = sampling_rate
+        self._cache_use_logged = False
 
     def evaluate(self, state, sim_step_count, in_radius=None):
         """
@@ -34,6 +35,7 @@ class Robustness:
                     encounter_vessel_eta=state.encounter_vessel_eta,
                     state=state.sim_state,
                     encounter_speed=state.encounter_speed,
+                    encounter_scenario=state.encounter_scenario,
                 )
             elif state._encounter_active:
                 state.clear_encounter()
@@ -46,6 +48,7 @@ class Robustness:
         encounter_vessel_eta: tuple,
         state: dict,
         encounter_speed: float,
+        encounter_scenario,
     ) -> interval.interval:
         """Evaluate the pacSTL specification over the prediction horizon."""
         if self.spec is None or self.ellipsoids_Ab_dict is None:
@@ -67,11 +70,28 @@ class Robustness:
         obs_ve = encounter_speed * np.sin(obs_psi)
 
         ego_trajectory = {}
-        reachable_tube = {}
+        if encounter_scenario is not None and encounter_scenario.reachable_tube:
+            reachable_tube = encounter_scenario.reachable_tube
+            tube_time_steps = encounter_scenario.tube_time_steps
+            if not self._cache_use_logged:
+                print(
+                    f"[ReachableTube] Robustness reusing static cache with "
+                    f"{len(tube_time_steps)} steps"
+                )
+                self._cache_use_logged = True
+        else:
+            tube_time_steps = sorted(self.ellipsoids_Ab_dict.keys())
+            reachable_tube = {
+                time_step: PACReachableSet(
+                    time_step=time_step,
+                    A_matrix=raw_tuple[0],
+                    b_vector=raw_tuple[1],
+                    center=raw_tuple[2],
+                )
+                for time_step, raw_tuple in self.ellipsoids_Ab_dict.items()
+            }
 
-        for time_step, raw_tuple in self.ellipsoids_Ab_dict.items():
-            A, b, c = raw_tuple
-
+        for time_step in tube_time_steps:
             # Predict ego position in world frame at this time step
             ego_n = eta[0] + ego_vn * time_step
             ego_e = eta[1] + ego_ve * time_step
@@ -102,9 +122,6 @@ class Robustness:
 
             ego_trajectory[time_step] = TimeStampedState(
                 time_step=time_step, state_array=state_array
-            )
-            reachable_tube[time_step] = PACReachableSet(
-                time_step=time_step, A_matrix=A, b_vector=b, center=c
             )
 
         return self.spec.evaluate(reachable_tube, ego_trajectory)
