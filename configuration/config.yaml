@@ -2,7 +2,7 @@ training_configuration:
   algorithm: PPO
   policy: MlpPolicy
   remove_existing_logging: false
-  training_timesteps: 50000
+  training_timesteps: 100000
   checkpoint_dir: checkpoints/ppo_mask
   checkpoint_freq: 5000
   tensorboard_log: logs/colregs_ppo
@@ -64,5 +64,5 @@ environment_configuration:
       is_enabled: true
       coefficient: 0.1
     reward_fallback:
-      is_enabled: true
+      is_enabled: false
       coefficient: -0.2

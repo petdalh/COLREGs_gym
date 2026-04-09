@@ -108,7 +108,7 @@ def main():
     tensorboard_log = train_cfg.get("tensorboard_log", "logs/colregs_ppo")
     Path(tensorboard_log).mkdir(parents=True, exist_ok=True)
 
-    model_path = checkpoint_dir / "colregs_maskable_ppo.zip"
+    model_path = checkpoint_dir / "colregs_maskable_ppo_100000_steps.zip"
 
     if train_cfg.get("remove_existing_logging", False):
         shutil.rmtree(checkpoint_dir, ignore_errors=True)

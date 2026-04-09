@@ -247,18 +247,15 @@ class COLREGsGym(McGym):
         self.history_in_radius = self.state.history_in_radius
         self.history_speed_multiplier = self.state.history_speed_multiplier
 
-        if self.encounter_scenario._encounter_init is not None:
-            self.state.encounter_vessel_eta = self.encounter_scenario._encounter_init.copy()
-        else:
-            self.state.encounter_vessel_eta = None
+        if seed is not None:
+            self._rng = np.random.default_rng(seed)
 
-        self.encounter_scenario.apply_to_state(self.state, self.state.encounter_vessel_eta)
-        self.state.encounter_scenario = self.encounter_scenario
+        self.encounter_scenario.reset(self.state)
+
         self._sync_runtime_state()
         self._step_count = 0
         self._controller = MRACShipController(dt=self.dt)
         self._episode_reward = 0.0
-
         self.state.record()
 
         return self._obs(), {}

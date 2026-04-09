@@ -9,6 +9,7 @@ class EncounterScenario:
         maneuver_horizon=10.0,
         monitoring_radius_safety_factor=2.0,
         masking_configuration=None,
+        seed=None,
     ):
         self.v_min = getattr(vessel_model, "v_min", None)
         self.v_max = getattr(vessel_model, "v_max", None)
@@ -30,6 +31,8 @@ class EncounterScenario:
         self.ellipsoids_Ab_dict = None
         self.reachable_tube = {}
         self.tube_time_steps = []
+        self._rng = np.random.default_rng(seed)
+
 
     def set_encounter(
         self,
@@ -54,18 +57,6 @@ class EncounterScenario:
             )
 
         own_n, own_e, own_psi_deg = start_position
-        own_psi_rad = np.deg2rad(own_psi_deg)
-
-        if encounter_type == "crossing":
-            bearing_rad = own_psi_rad + np.deg2rad(45.0)
-            t_n = own_n + separation * np.cos(bearing_rad)
-            t_e = own_e + separation * np.sin(bearing_rad)
-            t_psi_deg = (own_psi_deg - 90.0) % 360.0
-        else:
-            raise ValueError(f"Unsupported encounter type: {encounter_type}")
-
-        goal_n = own_n + goal_ahead_distance * np.cos(own_psi_rad)
-        goal_e = own_e + goal_ahead_distance * np.sin(own_psi_rad)
 
         self.start_position = start_position
         self.wave_conditions = wave_conditions
@@ -80,6 +71,27 @@ class EncounterScenario:
             **dict(masking_configuration or {}),
         }
         self.nominal_path_start = np.array([own_n, own_e], dtype=float)
+    
+        if encounter_type == "crossing":
+            self._set_crossing_encounter(own_n, own_e, own_psi_deg)
+        else:
+            raise ValueError(f"Unsupported encounter type: {encounter_type}")
+
+    def _set_crossing_encounter(self, own_n, own_e, own_psi_deg, noise: np.random.Generator = np.random.default_rng()):
+        own_psi_rad = np.deg2rad(own_psi_deg)
+        bearing_rad = own_psi_rad + np.deg2rad(45.0)
+
+        pos_noise_n = noise.uniform(-2.0, 2.0)
+        pos_noise_e = noise.uniform(-2.0, 2.0)
+        heading_noise_deg = noise.uniform(-5.0, 5.0)
+
+        t_n = own_n + self.separation * np.cos(bearing_rad) + pos_noise_n
+        t_e = own_e + self.separation * np.sin(bearing_rad) + pos_noise_e
+        t_psi_deg = (own_psi_deg - 90.0 + heading_noise_deg) % 360.0 
+
+        goal_n = own_n + self.goal_ahead_distance * np.cos(own_psi_rad)
+        goal_e = own_e + self.goal_ahead_distance * np.sin(own_psi_rad)
+
         self._encounter_init = np.array([t_n, t_e, np.deg2rad(t_psi_deg)])
         self.goal = (goal_n, goal_e, 1.0)
 
@@ -130,3 +142,16 @@ class EncounterScenario:
         state.nominal_path_start = self.nominal_path_start
         state.encounter_vessel_eta = encounter_vessel_eta
         state.encounter_speed = self.target_speed
+    
+    def reset(self, state, seed=None):
+        """Re-roll noise and apply the encounter to the given state."""
+        if seed is not None:
+            self._rng = np.random.default_rng(seed=seed)
+            
+        if self.start_position is not None and self._rng is not None:
+            own_n, own_e, own_psi_deg = self.start_position
+            self._set_crossing_encounter(own_n, own_e, own_psi_deg, noise=self._rng)
+
+        encounter_eta = self._encounter_init.copy() if self._encounter_init is not None else None
+        self.apply_to_state(state, encounter_eta)
+        state.encounter_scenario = self
