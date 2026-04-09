@@ -50,19 +50,65 @@ environment_configuration:
     mask_recompute_interval: 2
 
   reward_configuration:
-    reward_progress:
-      is_enabled: true
+    # Base handlers (disabled in favour of ColregsReward equivalents below) 
+    reward_progress: # Redundant with reward_goal_distance; included for reference and potential future use
+      is_enabled: false
       coefficient: 1.0
-    reward_cte:
-      is_enabled: true
+    reward_cte: # Redundant with reward_lateral_deviation; included for reference and potential future use
+      is_enabled: false
       coefficient: -0.005
       clip: 5.0
-    reward_speed:
-      is_enabled: true
+    reward_speed: # Redundant with reward_velocity; included for reference and potential future use
+      is_enabled: false
       coefficient: -0.02
     reward_heading:
-      is_enabled: true
+      is_enabled: false
       coefficient: 0.1
     reward_fallback:
       is_enabled: false
       coefficient: -0.2
+
+    # ColregsReward handlers
+    reward_termination:
+      is_enabled: true
+      reward_goal_reached:    1.0
+      reward_collision:      -1.0
+      reward_time_out:       -0.5
+      reward_out_of_bounds:  -1.0
+
+    reward_velocity:
+      is_enabled: true
+      # Set to match active speed_multipliers range
+      low_threshold:   0.7
+      high_threshold:  1.0
+      coefficient:    -1.0
+
+    reward_goal_distance:
+      is_enabled: true
+      final_approach_start_dist:           5.0   # c1
+      euclidean_advance_coeff:             1.0   # c2
+      orientation_advance_coeff:           1.0   # c3
+      final_approach_euclidean_dist_coeff: 0.0   # c5 (set negative to enable)
+      final_approach_distance_coeff:       1.0   # c6
+      final_approach_linearization_coeff:  0.0   # c7 (set positive to enable)
+      timestep_normalization:             5 
+
+    reward_lateral_deviation:
+      is_enabled: true
+      coefficient:              -0.005   # c4
+      clip:                      5.0    # c8 (0 = no clip)
+      final_approach_start_dist: 5.0    # c1
+
+    reward_safe_distance:
+      is_enabled: true
+      magnitude:                   1.0
+      clip:                       -5.0
+      starboard_static_coeff:      1.5
+      port_static_coeff:           1.0
+      stern_static_coeff:          0.5
+      starboard_dyn_plus_coeff:    1.5
+      starboard_dyn_minus_coeff:   0.5
+      port_dyn_plus_coeff:         1.5
+      port_dyn_minus_coeff:        0.5
+      stern_dyn_plus_coeff:        0.5
+      stern_dyn_minus_coeff:       0.5

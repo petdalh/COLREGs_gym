@@ -2,7 +2,7 @@ from gym.action.action import Action
 from gym.callback.episode_logger import EpisodeLogger
 from gym.encounter_scenario import EncounterScenario
 from gym.observation.observation import Observation
-from gym.reward.reward import Reward
+from gym.reward.colregs_reward import ColregsReward
 from gym.robustness.robustness import Robustness
 from gym.masking import Masking
 from gym.state import State
@@ -91,7 +91,7 @@ class COLREGsGym(McGym):
         )
         self.spec = None
         self.ellipsoids_Ab_dict = None
-        self.reward = Reward(config=reward_cfg)
+        self.reward = ColregsReward(config=reward_cfg)
         self.masking = Masking(
             n_actions=self.vessel_action.n_actions,
             robustness_margin=robustness_margin,
@@ -194,10 +194,12 @@ class COLREGsGym(McGym):
             self._update_encounter_state(robustness)
 
         obs = self.observation.get(self.state)
+        self.state.terminal_reason = info.get("reason", None)
         reward, reward_info = self.reward.get_reward(
             self.state,
             in_radius=self.state.in_monitoring_radius,
         )
+        self.state.terminal_reason = None
         info.update(reward_info)
 
         if terminated or truncated:

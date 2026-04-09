@@ -19,6 +19,7 @@ class State:
 
         self.sim_state = None
         self.in_monitoring_radius = None
+        self.terminal_reason: str | None = None
 
         self.encounter_scenario = None
         self._goal = None
@@ -147,6 +148,7 @@ class State:
         self.fallback_used = False
         self.sim_state = None
         self.in_monitoring_radius = None
+        self.terminal_reason = None
         self.encounter_scenario = None
         self._goal = None
         self._nominal_path_start = None
