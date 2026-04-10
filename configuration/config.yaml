@@ -4,10 +4,10 @@ training_configuration:
   remove_existing_logging: false
   training_timesteps: 100000
   checkpoint_dir: checkpoints/ppo_mask
-  checkpoint_freq: 5000
+  checkpoint_freq: 10000
   tensorboard_log: logs/colregs_ppo
   plot_dir: plots
-  plot_every_episodes: 50
+  plot_every_episodes: 100
   policy_net_arch: [128, 128]
   n_steps: 128
   batch_size: 32
@@ -21,7 +21,7 @@ environment_configuration:
   sim_dt: 0.5
 
   action_configuration:
-    heading_offsets_deg: [-15, -10, -5, 0, 5, 10, 15]
+    heading_offsets_deg: [-25, -15, -10, -5, 0, 5, 10, 15, 25]
     speed_multipliers: [0.7, 0.8, 0.9, 1.0]
 
   masking_configuration:
@@ -42,7 +42,7 @@ environment_configuration:
     maneuver_horizon: 10.0
 
   monitoring_configuration:
-    masking_enabled: false
+    masking_enabled: true
     monitoring_radius: 12.0
     monitoring_radius_safety_factor: 3.0
     robustness_margin: 3.0
@@ -65,16 +65,16 @@ environment_configuration:
       is_enabled: false
       coefficient: 0.1
     reward_fallback:
-      is_enabled: false
-      coefficient: -0.2
+      is_enabled: true
+      coefficient: -1
 
     # ColregsReward handlers
     reward_termination:
       is_enabled: true
-      reward_goal_reached:    1.0
-      reward_collision:      -1.0
-      reward_time_out:       -0.5
-      reward_out_of_bounds:  -1.0
+      reward_goal_reached:    50.0
+      reward_collision:      -50.0
+      reward_time_out:       -20.0
+      reward_out_of_bounds:  -20.0
 
     reward_velocity:
       is_enabled: true
@@ -101,14 +101,14 @@ environment_configuration:
 
     reward_safe_distance:
       is_enabled: true
-      magnitude:                   1.0
-      clip:                       -5.0
-      starboard_static_coeff:      1.5
-      port_static_coeff:           1.0
-      stern_static_coeff:          0.5
-      starboard_dyn_plus_coeff:    1.5
-      starboard_dyn_minus_coeff:   0.5
-      port_dyn_plus_coeff:         1.5
-      port_dyn_minus_coeff:        0.5
-      stern_dyn_plus_coeff:        0.5
-      stern_dyn_minus_coeff:       0.5
+      magnitude:                   75.0
+      clip:                       -10.0
+      starboard_static_coeff:      0.007
+      port_static_coeff:           0.09
+      stern_static_coeff:          0.01
+      starboard_dyn_plus_coeff:    0.004
+      starboard_dyn_minus_coeff:   0.05
+      port_dyn_plus_coeff:         0.007
+      port_dyn_minus_coeff:        0.005
+      stern_dyn_plus_coeff:        0.007
+      stern_dyn_minus_coeff:       0.005

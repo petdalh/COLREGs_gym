@@ -84,7 +84,7 @@ class ColregsMonitorCallback(BaseCallback):
     def _save_training_curves(self):
         import matplotlib.pyplot as plt
 
-        fig, axes = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
+        fig, axes = plt.subplots(5, 1, figsize=(10, 16), sharex=True)
 
         axes[0].plot(self.episode_rewards, alpha=0.3, color="blue")
         if len(self.episode_rewards) >= 20:
@@ -112,20 +112,28 @@ class ColregsMonitorCallback(BaseCallback):
                 collisions.append(sum(1 for r in chunk if r == "collision") / window)
                 timeouts.append(sum(1 for r in chunk if r == "time_limit") / window)
             x = range(window, len(self.episode_reasons) + 1)
-            axes[2].stackplot(
-                x,
-                goals,
-                collisions,
-                timeouts,
-                labels=["Goal", "Collision", "Timeout"],
-                colors=["#2ecc71", "#e74c3c", "#f39c12"],
-                alpha=0.7,
-            )
-            axes[2].legend(loc="upper left")
-        axes[2].set_ylabel("Rate (last 20)")
-        axes[2].set_xlabel("Episode")
-        axes[2].set_ylim(0, 1)
-        axes[2].grid(True, alpha=0.3)
+
+            axes[2].plot(x, goals, color="#2ecc71")
+            axes[2].set_ylabel("Goal Rate")
+            axes[2].set_ylim(0, 1)
+            axes[2].grid(True, alpha=0.3)
+
+            axes[3].plot(x, collisions, color="#e74c3c")
+            axes[3].set_ylabel("Collision Rate")
+            axes[3].set_ylim(0, 1)
+            axes[3].grid(True, alpha=0.3)
+
+            axes[4].plot(x, timeouts, color="#f39c12")
+            axes[4].set_ylabel("Timeout Rate")
+            axes[4].set_ylim(0, 1)
+            axes[4].grid(True, alpha=0.3)
+        else:
+            for ax in axes[2:]:
+                ax.set_ylabel("Rate (last 20)")
+                ax.set_ylim(0, 1)
+                ax.grid(True, alpha=0.3)
+
+        axes[4].set_xlabel("Episode")
 
         plt.tight_layout()
         plt.savefig(os.path.join(self.plot_dir, "training_curves.png"), dpi=150)
