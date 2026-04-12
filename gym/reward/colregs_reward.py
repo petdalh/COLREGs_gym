@@ -13,9 +13,8 @@ class ColregsReward(Reward):
     Extends the base Reward class with reward terms ported from ColregsReward
     (E. Meyer et al., COLREG-Compliant Collision Avoidance for USV Using DRL).
 
-    Crossing-only: reverse-driving and acceleration penalties are omitted
-    (speed_multiplier never goes negative; discrete action space has no
-    acceleration state).
+    Crossing-only: reverse-driving penalties are omitted
+    (speed_multiplier never goes negative in the discrete action space).
 
     All parameters are read exclusively from the config dict — no values are
     inferred from the action space or environment configuration.
@@ -25,6 +24,7 @@ class ColregsReward(Reward):
         super().__init__(config)  # registers all base handlers
 
         extra_handlers = {
+            "reward_acceleration":      self._build_acceleration,
             "reward_termination":       self._build_termination,
             "reward_velocity":          self._build_velocity,
             "reward_goal_distance":     self._build_goal_distance,
@@ -35,6 +35,32 @@ class ColregsReward(Reward):
             cfg = config.get(key, {})
             if cfg.get("is_enabled", False):
                 builder(cfg)
+
+    # ------------------------------------------------------------------ #
+    # reward_acceleration                                                 #
+    # ------------------------------------------------------------------ #
+
+    def _build_acceleration(self, cfg):
+        self._prev_speed_multiplier = None
+        self.reward_handlers["reward_acceleration"] = partial(
+            self._reward_acceleration, cfg["coefficient"]
+        )
+        self.reward_reset_handlers["reward_acceleration"] = lambda: setattr(
+            self, "_prev_speed_multiplier", None
+        )
+
+    def _reward_acceleration(self, coeff, state, in_radius):
+        kappa = state._current_speed_multiplier
+        if np.isnan(kappa):
+            return 0.0
+
+        if self._prev_speed_multiplier is None:
+            self._prev_speed_multiplier = kappa
+            return 0.0
+
+        delta = abs(kappa - self._prev_speed_multiplier)
+        self._prev_speed_multiplier = kappa
+        return coeff * delta
 
     # ------------------------------------------------------------------ #
     # reward_termination                                                   #
