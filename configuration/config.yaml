@@ -21,7 +21,7 @@ environment_configuration:
   sim_dt: 0.5
 
   action_configuration:
-    heading_offsets_deg: [-25, -15, -10, -5, 0, 5, 10, 15, 25]
+    heading_offsets_deg: [-15, -10, -5, 0, 5, 10, 15]
     speed_multipliers: [0.7, 0.8, 0.9, 1.0]
 
   masking_configuration:
@@ -42,7 +42,7 @@ environment_configuration:
     maneuver_horizon: 10.0
 
   monitoring_configuration:
-    masking_enabled: true
+    masking_enabled: false
     monitoring_radius: 12.0
     monitoring_radius_safety_factor: 3.0
     robustness_margin: 3.0
@@ -65,10 +65,14 @@ environment_configuration:
       is_enabled: false
       coefficient: 0.1
     reward_fallback:
-      is_enabled: true
+      is_enabled: false
       coefficient: -1
 
     # ColregsReward handlers
+    reward_acceleration:
+      is_enabled: false
+      coefficient: -2.0
+
     reward_termination:
       is_enabled: true
       reward_goal_reached:    50.0
@@ -79,9 +83,9 @@ environment_configuration:
     reward_velocity:
       is_enabled: true
       # Set to match active speed_multipliers range
-      low_threshold:   0.7
+      low_threshold:   0.9
       high_threshold:  1.0
-      coefficient:    -1.0
+      coefficient:     1.0
 
     reward_goal_distance:
       is_enabled: true
