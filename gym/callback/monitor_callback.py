@@ -13,6 +13,8 @@ class ColregsMonitorCallback(BaseCallback):
         self.plot_dir = plot_dir
         self.plot_every = plot_every_episodes
 
+        self.step_rewards = []
+        self.step_timesteps = []
         self.episode_rewards = []
         self.episode_lengths = []
         self.episode_reasons = []
@@ -21,6 +23,11 @@ class ColregsMonitorCallback(BaseCallback):
         os.makedirs(plot_dir, exist_ok=True)
 
     def _on_step(self):
+        rewards = self.locals.get("rewards")
+        if rewards is not None:
+            self.step_rewards.append(float(np.mean(rewards)))
+            self.step_timesteps.append(int(self.num_timesteps))
+
         infos = self.locals.get("infos", [])
         for info in infos:
             if "episode" in info:
@@ -84,22 +91,30 @@ class ColregsMonitorCallback(BaseCallback):
     def _save_training_curves(self):
         import matplotlib.pyplot as plt
 
-        fig, axes = plt.subplots(5, 1, figsize=(10, 16), sharex=True)
+        fig, axes = plt.subplots(6, 1, figsize=(10, 19))
 
-        axes[0].plot(self.episode_rewards, alpha=0.3, color="blue")
-        if len(self.episode_rewards) >= 20:
-            rolling = np.convolve(self.episode_rewards, np.ones(20) / 20, mode="valid")
-            axes[0].plot(range(19, 19 + len(rolling)), rolling, color="blue")
-        axes[0].set_ylabel("Episode Reward")
+        axes[0].plot(self.step_timesteps, self.step_rewards, alpha=0.15, color="purple")
+        if len(self.step_rewards) >= 200:
+            rolling = np.convolve(self.step_rewards, np.ones(200) / 200, mode="valid")
+            axes[0].plot(self.step_timesteps[199:], rolling, color="purple")
+        axes[0].set_ylabel("Step Reward")
+        axes[0].set_xlabel("Training Timesteps")
         axes[0].set_title("Training Progress")
         axes[0].grid(True, alpha=0.3)
 
-        axes[1].plot(self.episode_lengths, alpha=0.3, color="green")
+        axes[1].plot(self.episode_rewards, alpha=0.3, color="blue")
+        if len(self.episode_rewards) >= 20:
+            rolling = np.convolve(self.episode_rewards, np.ones(20) / 20, mode="valid")
+            axes[1].plot(range(19, 19 + len(rolling)), rolling, color="blue")
+        axes[1].set_ylabel("Episode Reward")
+        axes[1].grid(True, alpha=0.3)
+
+        axes[2].plot(self.episode_lengths, alpha=0.3, color="green")
         if len(self.episode_lengths) >= 20:
             rolling = np.convolve(self.episode_lengths, np.ones(20) / 20, mode="valid")
-            axes[1].plot(range(19, 19 + len(rolling)), rolling, color="green")
-        axes[1].set_ylabel("Episode Length")
-        axes[1].grid(True, alpha=0.3)
+            axes[2].plot(range(19, 19 + len(rolling)), rolling, color="green")
+        axes[2].set_ylabel("Episode Length")
+        axes[2].grid(True, alpha=0.3)
 
         window = 20
         if len(self.episode_reasons) >= window:
@@ -113,27 +128,28 @@ class ColregsMonitorCallback(BaseCallback):
                 timeouts.append(sum(1 for r in chunk if r == "time_limit") / window)
             x = range(window, len(self.episode_reasons) + 1)
 
-            axes[2].plot(x, goals, color="#2ecc71")
-            axes[2].set_ylabel("Goal Rate")
-            axes[2].set_ylim(0, 1)
-            axes[2].grid(True, alpha=0.3)
-
-            axes[3].plot(x, collisions, color="#e74c3c")
-            axes[3].set_ylabel("Collision Rate")
+            axes[3].plot(x, goals, color="#2ecc71")
+            axes[3].set_ylabel("Goal Rate")
             axes[3].set_ylim(0, 1)
             axes[3].grid(True, alpha=0.3)
 
-            axes[4].plot(x, timeouts, color="#f39c12")
-            axes[4].set_ylabel("Timeout Rate")
+            axes[4].plot(x, collisions, color="#e74c3c")
+            axes[4].set_ylabel("Collision Rate")
             axes[4].set_ylim(0, 1)
             axes[4].grid(True, alpha=0.3)
+
+            axes[5].plot(x, timeouts, color="#f39c12")
+            axes[5].set_ylabel("Timeout Rate")
+            axes[5].set_ylim(0, 1)
+            axes[5].grid(True, alpha=0.3)
         else:
-            for ax in axes[2:]:
+            for ax in axes[3:]:
                 ax.set_ylabel("Rate (last 20)")
                 ax.set_ylim(0, 1)
                 ax.grid(True, alpha=0.3)
 
-        axes[4].set_xlabel("Episode")
+        for ax in axes[1:]:
+            ax.set_xlabel("Episode")
 
         plt.tight_layout()
         plt.savefig(os.path.join(self.plot_dir, "training_curves.png"), dpi=150)

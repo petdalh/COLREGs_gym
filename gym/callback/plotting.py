@@ -1,3 +1,6 @@
+from ast import literal_eval
+from pathlib import Path
+
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
@@ -49,6 +52,47 @@ _EGO_CLR = "#2060a8"  # steel blue
 _OBS_CLR = "#c44e52"  # muted red
 _GOAL_CLR = "#4a9c5e"  # forest green
 _CMAP = "viridis"
+_DEFAULT_SPEED_MULTIPLIERS = np.array([0.7, 0.8, 0.9, 1.0], dtype=float)
+_DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configuration" / "config.yaml"
+
+
+def _parse_speed_multipliers_line(config_path: Path) -> np.ndarray:
+    for line in config_path.read_text().splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line.startswith("speed_multipliers:"):
+            continue
+
+        speed_multipliers = literal_eval(line.split(":", 1)[1].strip())
+        return np.asarray(speed_multipliers, dtype=float)
+
+    raise KeyError("speed_multipliers")
+
+
+def _load_speed_multipliers(config_path: Path = _DEFAULT_CONFIG_PATH) -> np.ndarray:
+    try:
+        try:
+            from gym.utils.config import load_config
+
+            config = load_config(str(config_path))
+            speed_multipliers = config["environment_configuration"]["action_configuration"][
+                "speed_multipliers"
+            ]
+        except ModuleNotFoundError:
+            speed_multipliers = _parse_speed_multipliers_line(config_path)
+        speed_multipliers = np.asarray(speed_multipliers, dtype=float)
+    except (FileNotFoundError, KeyError, SyntaxError, TypeError, ValueError):
+        return _DEFAULT_SPEED_MULTIPLIERS
+
+    if speed_multipliers.size == 0 or not np.all(np.isfinite(speed_multipliers)):
+        return _DEFAULT_SPEED_MULTIPLIERS
+    return speed_multipliers
+
+
+_SPEED_MULTIPLIERS = _load_speed_multipliers()
+_SPEED_NORM = Normalize(
+    vmin=float(np.min(_SPEED_MULTIPLIERS)),
+    vmax=float(np.max(_SPEED_MULTIPLIERS)),
+)
 
 
 def plot_episode_trajectory(
@@ -88,15 +132,11 @@ def plot_episode_trajectory(
 
         if np.any(finite_mask):
             finite_values = segment_values[finite_mask]
-            vmin, vmax = float(np.min(finite_values)), float(np.max(finite_values))
-            if np.isclose(vmin, vmax):
-                vmax = vmin + 1e-9
 
-            norm = Normalize(vmin=vmin, vmax=vmax)
             lc = LineCollection(
                 segments[finite_mask],
                 cmap=_CMAP,
-                norm=norm,
+                norm=_SPEED_NORM,
                 linewidth=1.2,
                 zorder=3,
                 capstyle="round",
@@ -106,6 +146,7 @@ def plot_episode_trajectory(
             # invisible line just for the legend entry
             ax.plot([], [], color=_EGO_CLR, linewidth=1.2, label="Ego vessel")
             cbar = fig.colorbar(lc, ax=ax, pad=0.03, fraction=0.046, aspect=28)
+            cbar.set_ticks(_SPEED_MULTIPLIERS)
             cbar.ax.tick_params(labelsize=7, width=0.4, length=2)
             cbar.set_label("Speed multiplier", fontsize=8, labelpad=3)
             cbar.outline.set_linewidth(0.4)
@@ -151,14 +192,9 @@ def plot_episode_trajectory(
         ego_dot_valid = ego_dot_idx[dot_mask]
         if len(ego_dot_valid) > 0:
             speed_vals = ego_speed_arr[ego_dot_valid]
-            finite_all = ego_speed_arr[np.isfinite(ego_speed_arr)]
-            vmin, vmax = float(np.min(finite_all)), float(np.max(finite_all))
-            if np.isclose(vmin, vmax):
-                vmax = vmin + 1e-9
-            norm = Normalize(vmin=vmin, vmax=vmax)
             ax.scatter(
                 ego_arr[ego_dot_valid, 1], ego_arr[ego_dot_valid, 0],
-                c=speed_vals, cmap=_CMAP, norm=norm,
+                c=speed_vals, cmap=_CMAP, norm=_SPEED_NORM,
                 s=12, linewidths=0.3, edgecolors="white", zorder=5,
             )
     else:
