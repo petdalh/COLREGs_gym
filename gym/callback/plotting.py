@@ -102,7 +102,7 @@ def plot_episode_trajectory(
     dt: float = 0.5,
     episode_num: int = 1,
     dot_every: int = 60,
-    collision_radius: float = 0.0,
+    collision_radius: float = 16.0,
     save_path: str | None = None,
     ego_speed_traj: list | None = None,
 ):

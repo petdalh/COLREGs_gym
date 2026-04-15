@@ -90,6 +90,7 @@ class COLREGsGym(McGym):
             low=-np.inf, high=np.inf, shape=(9,), dtype=np.float32
         )
         self.spec = None
+        self.maneuver_spec_factory = None
         self.ellipsoids_Ab_dict = None
         self.reward = ColregsReward(config=reward_cfg)
         self.masking = Masking(

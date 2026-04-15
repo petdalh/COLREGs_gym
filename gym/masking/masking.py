@@ -63,6 +63,7 @@ class Masking:
                             env.state._active_maneuver_spec,
                             env.ellipsoids_Ab_dict,
                             env.encounter_scenario,
+                            spec_factory=getattr(env, "maneuver_spec_factory", None),
                         )
                 if not was_active:
                     print(

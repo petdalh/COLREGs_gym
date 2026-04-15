@@ -254,8 +254,6 @@ class ColregsReward(Reward):
             return 0.0
 
         # Relative bearing in ego body frame, normalised to [-pi, pi]
-        # wrap_angle in gym/utils/geometry.py wraps to [-pi, pi]
-        # (fixes the <= pi bug present in the reference's relative_angle_to_obs)
         bearing = np.arctan2(enc_e - ego_e, enc_n - ego_n)
         obs_rel_rad = wrap_angle(bearing - ego_psi)
         obs_rel_deg = np.degrees(obs_rel_rad)
@@ -264,9 +262,6 @@ class ColregsReward(Reward):
         sector_weight = self._sector_static(obs_rel_deg, params)
 
         # Encounter vessel velocity expressed in ego frame.
-        # R has the same structure as in the reference code:
-        #   R = [[cos(psi), -sin(psi)], [sin(psi), cos(psi)]]
-        # v_enc in NED: [v_n, v_e] = speed * [cos(enc_psi), sin(enc_psi)]
         R = np.array([
             [np.cos(ego_psi), -np.sin(ego_psi)],
             [np.sin(ego_psi),  np.cos(ego_psi)],
@@ -278,8 +273,6 @@ class ColregsReward(Reward):
         # Dynamic sector weight (depends on velocity_y sign)
         sector_weight_dyn = self._sector_dynamic(obs_rel_deg, velocity_y, params)
 
-        # Weighting term: obstacle directly ahead → weighting → -0.5
-        # Uses degrees as in the reference (large angles → weighting → 0)
         weighting_term = -1.0 / (1.0 + np.exp(np.abs(obs_rel_deg)))
 
         raw = params["magnitude"] * np.exp(

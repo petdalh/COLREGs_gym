@@ -9,8 +9,8 @@ training_configuration:
   plot_dir: plots
   plot_every_episodes: 100
   policy_net_arch: [128, 128]
-  n_steps: 128
-  batch_size: 32
+  n_steps: 1024
+  batch_size: 64
   learning_rate: 3.0e-4
 
 environment_configuration:
@@ -21,7 +21,7 @@ environment_configuration:
   sim_dt: 0.5
 
   action_configuration:
-    heading_offsets_deg: [-15, -10, -5, 0, 5, 10, 15]
+    heading_offsets_deg: [-20, -15,-10, -5, 0, 5, 10, 15, 20]
     speed_multipliers: [0.7, 0.8, 0.9, 1.0]
 
   masking_configuration:
@@ -29,25 +29,30 @@ environment_configuration:
     k_heading: 1.0
     k_speed: 0.5
     a_max: 0.1
+    decision_depth: 2
+    certification_margin: 2.0
+    tube_step_factor: 4       # use every 4th tube step → ~2 s per BFS depth
+    fix_speed_at_depth: true  # fix speed at depth > 0, only vary heading
+    pruning_threshold: -5.0   # prune branches > 5 units below cert margin
 
   encounter_configuration:
     start_position: [1.5, 7.5, 0.0]
     wave_conditions: [0.05, 1.5, 0.0]
     encounter_type: crossing
-    separation: 14.0
+    separation: 18.0
     target_speed: 0.2
-    goal_ahead_distance: 25.0
+    goal_ahead_distance: 30.0
     collision_radius: 1.0
-    simtime: 200.0
+    simtime: 250.0
     maneuver_horizon: 10.0
 
   monitoring_configuration:
     masking_enabled: false
     monitoring_radius: 12.0
-    monitoring_radius_safety_factor: 3.0
-    robustness_margin: 3.0
-    robustness_sampling_rate: 5
-    mask_recompute_interval: 2
+    monitoring_radius_safety_factor: 0.0
+    robustness_margin: 10.0
+    robustness_sampling_rate: 1
+    mask_recompute_interval: 1
 
   reward_configuration:
     # Base handlers (disabled in favour of ColregsReward equivalents below) 
@@ -70,8 +75,8 @@ environment_configuration:
 
     # ColregsReward handlers
     reward_acceleration:
-      is_enabled: false
-      coefficient: -2.0
+      is_enabled: true
+      coefficient: -0.05
 
     reward_termination:
       is_enabled: true
