@@ -77,7 +77,9 @@ class EncounterScenario:
         else:
             raise ValueError(f"Unsupported encounter type: {encounter_type}")
 
-    def _set_crossing_encounter(self, own_n, own_e, own_psi_deg, noise: np.random.Generator = np.random.default_rng()):
+    def _set_crossing_encounter(self, own_n, own_e, own_psi_deg, noise: np.random.Generator = None):
+        if noise is None:
+            noise = self._rng
         own_psi_rad = np.deg2rad(own_psi_deg)
         bearing_rad = own_psi_rad + np.deg2rad(45.0)
 
