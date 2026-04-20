@@ -2,12 +2,11 @@ import time
 from collections import deque
 
 import numpy as np
-
 from pacstl.common.interfaces import PACReachableSet, TimeStampedState
 
 from gym.utils.discrete_actions import decode_discrete_action
 from gym.utils.geometry import to_obstacle_frame, within_monitoring_radius, wrap_angle
-from gym.utils.robustness import extract_robustness_lower, extract_robustness_upper
+from gym.utils.robustness import extract_robustness_upper
 
 
 class ActionMasker:
@@ -60,7 +59,9 @@ class ActionMasker:
         # robustness bound is below this threshold (default -inf = no pruning).
         self.pruning_threshold = float(config.get("pruning_threshold", -np.inf))
 
-    def update_scenario(self, spec, ellipsoids_Ab_dict, encounter_scenario=None, spec_factory=None):
+    def update_scenario(
+        self, spec, ellipsoids_Ab_dict, encounter_scenario=None, spec_factory=None
+    ):
         self.spec = spec
         self._spec_factory = spec_factory
         self._spec_cache.clear()
@@ -137,7 +138,9 @@ class ActionMasker:
         mask = np.ones(self.n_actions, dtype=bool)
         is_fallback = False
 
-        if (self.spec is None and self._spec_factory is None) or self.ellipsoids_Ab_dict is None:
+        if (
+            self.spec is None and self._spec_factory is None
+        ) or self.ellipsoids_Ab_dict is None:
             return mask, is_fallback
 
         monitoring_state = ego_state if state is None else state
@@ -149,7 +152,7 @@ class ActionMasker:
         # Build the subsampled time step list for this search.  Stored as an
         # instance variable so _simulate_depth_step and _get_spec can read it
         # without needing a changed signature.
-        self._search_tube_steps = self.tube_time_steps[::self.tube_step_factor]
+        self._search_tube_steps = self.tube_time_steps[:: self.tube_step_factor]
         effective_depth = min(self.decision_depth, len(self._search_tube_steps))
         if effective_depth == 0:
             return mask, is_fallback
@@ -165,12 +168,16 @@ class ActionMasker:
             # Speed index of the first action — used to fix speed at depth > 0.
             first_s_idx = first_action % len(self.speed_multipliers)
 
-            queue = deque([{
-                "state": ego_state,
-                "trajectory": {},
-                "depth": 0,
-                "pending_action": first_action,
-            }])
+            queue = deque(
+                [
+                    {
+                        "state": ego_state,
+                        "trajectory": {},
+                        "depth": 0,
+                        "pending_action": first_action,
+                    }
+                ]
+            )
 
             while queue and not found_safe:
                 node = queue.popleft()  # BFS: shallowest nodes first
@@ -209,7 +216,10 @@ class ActionMasker:
                     # below the certification margin that recovery is unlikely,
                     # skip expanding its children.  pruning_threshold defaults
                     # to -inf (disabled).
-                    if np.isfinite(self.pruning_threshold) and rob_upper < self.pruning_threshold:
+                    if (
+                        np.isfinite(self.pruning_threshold)
+                        and rob_upper < self.pruning_threshold
+                    ):
                         continue
 
                 next_depth = node["depth"] + 1
@@ -219,26 +229,31 @@ class ActionMasker:
                     # factor by len(speed_multipliers) for every inner level.
                     if self.fix_speed_at_depth and next_depth > 0:
                         cont_candidates = [
-                            a for a in candidates
+                            a
+                            for a in candidates
                             if a % len(self.speed_multipliers) == first_s_idx
                         ]
                     else:
                         cont_candidates = candidates
                     for cont_action in cont_candidates:
-                        queue.append({
-                            "state": next_state,
-                            "trajectory": trajectory,
-                            "depth": next_depth,
-                            "pending_action": cont_action,
-                        })
+                        queue.append(
+                            {
+                                "state": next_state,
+                                "trajectory": trajectory,
+                                "depth": next_depth,
+                                "pending_action": cont_action,
+                            }
+                        )
 
             if found_safe:
                 mask[first_action] = True
 
             action_robustness[first_action] = best_rob
 
-        print(f"[ActionMask] search took {time.perf_counter() - _t0:.4f}s "
-              f"({mask.sum()}/{len(candidates)} actions safe)")
+        print(
+            f"[ActionMask] search took {time.perf_counter() - _t0:.4f}s "
+            f"({mask.sum()}/{len(candidates)} actions safe)"
+        )
 
         if not mask.any():
             is_fallback = True
@@ -361,7 +376,9 @@ class ActionMasker:
             ]
         )
 
-        rollout = {target_t: TimeStampedState(time_step=target_t, state_array=state_array)}
+        rollout = {
+            target_t: TimeStampedState(time_step=target_t, state_array=state_array)
+        }
         next_state = {
             "eta": np.array([px, py, psi]),
             "nu": np.array([u, 0.0, 0.0]),

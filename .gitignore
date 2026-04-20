@@ -7,3 +7,5 @@ checkpoints/
 logs/
 plots/
 old_plots/
+wandb/
+tea_debug.log

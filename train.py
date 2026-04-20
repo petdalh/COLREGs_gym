@@ -6,6 +6,8 @@ from sb3_contrib import MaskablePPO
 from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback
 from stable_baselines3.common.monitor import Monitor
 
+import wandb
+
 from gym.colregs_gym import COLREGsGym
 from gym.callback import ColregsMonitorCallback
 from gym.utils.config import load_config
@@ -119,6 +121,15 @@ def main():
     tensorboard_log = train_cfg.get("tensorboard_log", "logs/colregs_ppo")
     Path(tensorboard_log).mkdir(parents=True, exist_ok=True)
 
+    wandb_cfg = config.get("wandb_configuration", {})
+    run = None
+    if wandb_cfg.get("enabled", False):
+        run = wandb.init(
+            project=wandb_cfg.get("project", "colregs-ppo"),
+            name=wandb_cfg.get("run_name"),
+            group=wandb_cfg.get("group"),
+        )
+
     model_path = checkpoint_dir / "colregs_maskable_ppo.zip"
 
     if train_cfg.get("remove_existing_logging", False):
@@ -157,6 +168,9 @@ def main():
 
     model.save(str(model_path))
     env.close()
+
+    if run:
+        run.finish()
 
 
 if __name__ == "__main__":

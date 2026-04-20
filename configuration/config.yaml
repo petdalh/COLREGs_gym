@@ -1,8 +1,14 @@
+wandb_configuration:
+  project: "colregs-ppo"      
+  run_name: null                
+  group: null                   
+  enabled: true
+
 training_configuration:
   algorithm: PPO
   policy: MlpPolicy
   remove_existing_logging: false
-  training_timesteps: 100000
+  training_timesteps: 10000
   checkpoint_dir: checkpoints/ppo_mask
   checkpoint_freq: 10000
   tensorboard_log: logs/colregs_ppo
@@ -31,7 +37,7 @@ environment_configuration:
     a_max: 0.1
     decision_depth: 2
     certification_margin: 2.0
-    tube_step_factor: 4       # use every 4th tube step → ~2 s per BFS depth
+    tube_step_factor: 4       # use every 4th tube step per BFS depth
     fix_speed_at_depth: true  # fix speed at depth > 0, only vary heading
     pruning_threshold: -5.0   # prune branches > 5 units below cert margin
 

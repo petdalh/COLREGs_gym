@@ -3,6 +3,8 @@ import os
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
 
+import wandb
+
 from gym.callback.plotting import plot_episode_trajectory, plot_robustness
 
 
@@ -45,11 +47,23 @@ class ColregsMonitorCallback(BaseCallback):
                     collisions = sum(1 for r in recent_reasons if r == "collision")
                     goals = sum(1 for r in recent_reasons if r == "goal_reached")
                     timeouts = sum(1 for r in recent_reasons if r == "time_limit")
-                    print(
-                        f"Ep {self.episode_count:5d} | "
-                        f"avg_r={avg_r:+8.2f} | avg_len={avg_l:5.1f} | "
-                        f"last10: {goals}G {collisions}C {timeouts}T"
-                    )
+                    # print(
+                    #     f"Ep {self.episode_count:5d} | "
+                    #     f"avg_r={avg_r:+8.2f} | avg_len={avg_l:5.1f} | "
+                    #     f"last10: {goals}G {collisions}C {timeouts}T"
+                    # )
+                    if wandb.run:
+                        wandb.log(
+                            {   
+                                "episode_count": self.episode_count,
+                                "avg_episode_reward": avg_r,
+                                "avg_episode_length": avg_l,
+                                "goal_rate": goals / 10,
+                                "collision_rate": collisions / 10,
+                                "timeout_rate": timeouts / 10,
+                            },
+                            step=self.num_timesteps,
+                        )   
 
                 if self.episode_count % self.plot_every == 0:
                     self._run_eval_episode()
@@ -68,6 +82,7 @@ class ColregsMonitorCallback(BaseCallback):
 
         tag = f"ep{self.episode_count:05d}"
 
+
         plot_episode_trajectory(
             ego_traj=self.eval_env.history_ego,
             ego_speed_traj=self.eval_env.history_speed_multiplier,
@@ -83,6 +98,13 @@ class ColregsMonitorCallback(BaseCallback):
             dt=self.eval_env.dt * getattr(self.eval_env, "decision_interval", 5),
             save_path=os.path.join(self.plot_dir, f"rob_{tag}.png"),
         )
+        if wandb.run:
+            wandb.log(
+                {
+                    f"trajectory": wandb.Image(os.path.join(self.plot_dir, f"traj_{tag}.png")),
+                    f"robustness": wandb.Image(os.path.join(self.plot_dir, f"rob_{tag}.png")),
+                }
+            )
 
     def _on_training_end(self):
         self._save_training_curves()
@@ -154,3 +176,7 @@ class ColregsMonitorCallback(BaseCallback):
         plt.tight_layout()
         plt.savefig(os.path.join(self.plot_dir, "training_curves.png"), dpi=150)
         plt.close()
+
+        if wandb.run:
+            wandb.log({"training_curves": wandb.Image(os.path.join(self.plot_dir, "training_curves.png"))})
+            
