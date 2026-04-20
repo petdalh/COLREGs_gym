@@ -53,7 +53,7 @@ environment_configuration:
     maneuver_horizon: 10.0
 
   monitoring_configuration:
-    masking_enabled: false
+    masking_enabled: true
     monitoring_radius: 12.0
     monitoring_radius_safety_factor: 0.0
     robustness_margin: 10.0

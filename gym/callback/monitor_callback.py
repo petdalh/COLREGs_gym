@@ -37,6 +37,11 @@ class ColregsMonitorCallback(BaseCallback):
             k: collections.deque(maxlen=10) for k in self._REWARD_KEYS
         }
 
+        self._ep_mask_allowed = []
+        self._ep_fallback_flags = []
+        self._rolling_mask_allowed = collections.deque(maxlen=10)
+        self._rolling_fallback_rate = collections.deque(maxlen=10)
+
         os.makedirs(plot_dir, exist_ok=True)
 
     def _on_step(self):
@@ -52,6 +57,10 @@ class ColregsMonitorCallback(BaseCallback):
                 if val is not None:
                     self._ep_reward_sums[key] += float(val)
             self._ep_reward_steps += 1
+
+            if info.get("encounter_active"):
+                self._ep_mask_allowed.append(info["mask_allowed_count"])
+                self._ep_fallback_flags.append(int(info["mask_fallback"]))
 
             if "episode" in info:
                 self.episode_count += 1
@@ -69,6 +78,13 @@ class ColregsMonitorCallback(BaseCallback):
                 self._ep_reward_sums = {k: 0.0 for k in self._REWARD_KEYS}
                 self._ep_reward_steps = 0
 
+                if self._ep_mask_allowed:
+                    self._rolling_mask_allowed.append(float(np.mean(self._ep_mask_allowed)))
+                if self._ep_fallback_flags:
+                    self._rolling_fallback_rate.append(float(np.mean(self._ep_fallback_flags)))
+                self._ep_mask_allowed = []
+                self._ep_fallback_flags = []
+
                 if self.episode_count % 1 == 0:
                     avg_r = np.mean(self.episode_rewards[-10:])
                     avg_l = np.mean(self.episode_lengths[-10:])
@@ -82,6 +98,11 @@ class ColregsMonitorCallback(BaseCallback):
                             for k, v in self._rolling_reward_means.items()
                             if v
                         }
+                        masking_log = {}
+                        if self._rolling_mask_allowed:
+                            masking_log["masking/allowed_actions"] = float(np.mean(self._rolling_mask_allowed))
+                        if self._rolling_fallback_rate:
+                            masking_log["masking/fallback_rate"] = float(np.mean(self._rolling_fallback_rate))
                         wandb.log(
                             {
                                 "episode_count": self.episode_count,
@@ -91,6 +112,7 @@ class ColregsMonitorCallback(BaseCallback):
                                 "collision_rate": collisions / 10,
                                 "timeout_rate": timeouts / 10,
                                 **rew_log,
+                                **masking_log,
                             },
                             step=self.num_timesteps,
                         )

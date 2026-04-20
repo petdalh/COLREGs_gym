@@ -207,6 +207,9 @@ class COLREGsGym(McGym):
         )
         self.state.terminal_reason = None
         info.update(reward_info)
+        info["encounter_active"] = bool(self.state._encounter_active)
+        info["mask_allowed_count"] = int(self.state._cached_mask.sum())
+        info["mask_fallback"] = bool(self.state.fallback_used)
 
         if terminated or truncated:
             self.callback.on_episode_end(info, terminated, self.reward)
