@@ -1,3 +1,4 @@
+import collections
 import os
 
 import numpy as np
@@ -22,6 +23,20 @@ class ColregsMonitorCallback(BaseCallback):
         self.episode_reasons = []
         self.episode_count = 0
 
+        self._REWARD_KEYS = [
+            "reward_acceleration",
+            "reward_termination",
+            "reward_velocity",
+            "reward_goal_distance",
+            "reward_lateral_deviation",
+            "reward_safe_distance",
+        ]
+        self._ep_reward_sums = {k: 0.0 for k in self._REWARD_KEYS}
+        self._ep_reward_steps = 0
+        self._rolling_reward_means = {
+            k: collections.deque(maxlen=10) for k in self._REWARD_KEYS
+        }
+
         os.makedirs(plot_dir, exist_ok=True)
 
     def _on_step(self):
@@ -32,6 +47,12 @@ class ColregsMonitorCallback(BaseCallback):
 
         infos = self.locals.get("infos", [])
         for info in infos:
+            for key in self._REWARD_KEYS:
+                val = info.get(key)
+                if val is not None:
+                    self._ep_reward_sums[key] += float(val)
+            self._ep_reward_steps += 1
+
             if "episode" in info:
                 self.episode_count += 1
                 self.episode_rewards.append(info["episode"]["r"])
@@ -40,30 +61,39 @@ class ColregsMonitorCallback(BaseCallback):
                 reason = info.get("reason", "unknown")
                 self.episode_reasons.append(reason)
 
-                if self.episode_count % 10 == 0:
+                if self._ep_reward_steps > 0:
+                    for k in self._REWARD_KEYS:
+                        self._rolling_reward_means[k].append(
+                            self._ep_reward_sums[k] / self._ep_reward_steps
+                        )
+                self._ep_reward_sums = {k: 0.0 for k in self._REWARD_KEYS}
+                self._ep_reward_steps = 0
+
+                if self.episode_count % 1 == 0:
                     avg_r = np.mean(self.episode_rewards[-10:])
                     avg_l = np.mean(self.episode_lengths[-10:])
                     recent_reasons = self.episode_reasons[-10:]
                     collisions = sum(1 for r in recent_reasons if r == "collision")
                     goals = sum(1 for r in recent_reasons if r == "goal_reached")
                     timeouts = sum(1 for r in recent_reasons if r == "time_limit")
-                    # print(
-                    #     f"Ep {self.episode_count:5d} | "
-                    #     f"avg_r={avg_r:+8.2f} | avg_len={avg_l:5.1f} | "
-                    #     f"last10: {goals}G {collisions}C {timeouts}T"
-                    # )
                     if wandb.run:
+                        rew_log = {
+                            f"reward_components/{k}": float(np.mean(v))
+                            for k, v in self._rolling_reward_means.items()
+                            if v
+                        }
                         wandb.log(
-                            {   
+                            {
                                 "episode_count": self.episode_count,
                                 "avg_episode_reward": avg_r,
                                 "avg_episode_length": avg_l,
                                 "goal_rate": goals / 10,
                                 "collision_rate": collisions / 10,
                                 "timeout_rate": timeouts / 10,
+                                **rew_log,
                             },
                             step=self.num_timesteps,
-                        )   
+                        )
 
                 if self.episode_count % self.plot_every == 0:
                     self._run_eval_episode()
