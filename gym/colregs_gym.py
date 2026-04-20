@@ -3,7 +3,7 @@ from gym.callback.episode_logger import EpisodeLogger
 from gym.encounter_scenario import EncounterScenario
 from gym.observation.observation import Observation
 from gym.reward.colregs_reward import ColregsReward
-from gym.robustness.robustness import Robustness
+from gym.robustness import Robustness, ManeuverRobustness
 from gym.masking import Masking
 from gym.state import State
 from gym.termination import Termination
@@ -112,6 +112,9 @@ class COLREGsGym(McGym):
             ellipsoids_Ab_dict=self.ellipsoids_Ab_dict,
             sampling_rate=monitoring_cfg.get("robustness_sampling_rate", 10),
         )
+        self.maneuver_robustness = ManeuverRobustness(
+            sampling_rate=monitoring_cfg.get("robustness_sampling_rate", 10),
+        )
         self.termination = Termination()
         self.truncation = Truncation()
         self.callback = EpisodeLogger()
@@ -194,6 +197,8 @@ class COLREGsGym(McGym):
             info["robustness"] = robustness
             self._update_encounter_state(robustness)
 
+        self.maneuver_robustness.evaluate(self.state, self._step_count)
+
         obs = self.observation.get(self.state)
         self.state.terminal_reason = info.get("reason", None)
         reward, reward_info = self.reward.get_reward(
@@ -213,6 +218,14 @@ class COLREGsGym(McGym):
 
     def action_masks(self):
         return self.masking.action_masks(self)
+
+    def configure_maneuver_monitoring(self, spec_factory):
+        """Configure ManeuverRobustness after the maneuver spec factory is set."""
+        self.maneuver_robustness.configure(
+            spec_factory=spec_factory,
+            tube_time_steps=self.encounter_scenario.tube_time_steps,
+            ellipsoids_Ab_dict=self.ellipsoids_Ab_dict,
+        )
 
     def configure_monitoring(self, spec, ellipsoids_Ab_dict, sampling_rate=None):
         if sampling_rate is None:
@@ -247,6 +260,7 @@ class COLREGsGym(McGym):
         self.history_ego = self.state.history_ego
         self.history_enc = self.state.history_enc
         self.history_rob = self.state.history_rob
+        self.history_maneuver_rob = self.state.history_maneuver_rob
         self.history_in_radius = self.state.history_in_radius
         self.history_speed_multiplier = self.state.history_speed_multiplier
 

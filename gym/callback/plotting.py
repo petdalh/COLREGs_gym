@@ -284,6 +284,7 @@ def plot_robustness(
     ep_robustness: list,
     dt: float = 0.5,
     save_path: str | None = None,
+    title: str | None = None,
 ):
     times, lowers, uppers = [], [], []
 
@@ -317,6 +318,8 @@ def plot_robustness(
 
     ax.set_ylabel(r"$[\rho]$")
     ax.set_xlabel(r"$t$ (s)")
+    if title:
+        ax.set_title(title, fontweight="medium", pad=4)
     ax.tick_params(top=True, right=True, which="both")
 
     if save_path:

@@ -123,18 +123,31 @@ class ColregsMonitorCallback(BaseCallback):
             save_path=os.path.join(self.plot_dir, f"traj_{tag}.png"),
         )
 
+        step_dt = self.eval_env.dt * getattr(self.eval_env, "decision_interval", 5)
+
         plot_robustness(
             ep_robustness=self.eval_env.history_rob,
-            dt=self.eval_env.dt * getattr(self.eval_env, "decision_interval", 5),
+            dt=step_dt,
             save_path=os.path.join(self.plot_dir, f"rob_{tag}.png"),
+            title="Crossing Detection",
         )
+
+        plot_robustness(
+            ep_robustness=self.eval_env.history_maneuver_rob,
+            dt=step_dt,
+            save_path=os.path.join(self.plot_dir, f"maneuver_rob_{tag}.png"),
+            title="Maneuver Spec",
+        )
+
         if wandb.run:
-            wandb.log(
-                {
-                    f"trajectory": wandb.Image(os.path.join(self.plot_dir, f"traj_{tag}.png")),
-                    f"robustness": wandb.Image(os.path.join(self.plot_dir, f"rob_{tag}.png")),
-                }
-            )
+            log_dict = {
+                "trajectory": wandb.Image(os.path.join(self.plot_dir, f"traj_{tag}.png")),
+                "robustness/crossing": wandb.Image(os.path.join(self.plot_dir, f"rob_{tag}.png")),
+            }
+            maneuver_rob_path = os.path.join(self.plot_dir, f"maneuver_rob_{tag}.png")
+            if os.path.exists(maneuver_rob_path):
+                log_dict["robustness/maneuver"] = wandb.Image(maneuver_rob_path)
+            wandb.log(log_dict)
 
     def _on_training_end(self):
         self._save_training_curves()

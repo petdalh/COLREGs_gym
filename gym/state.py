@@ -28,6 +28,7 @@ class State:
         self.history_ego = []
         self.history_enc = []
         self.history_rob = []
+        self.history_maneuver_rob = []
         self.history_in_radius = []
         self.history_speed_multiplier = []
         self._current_speed_multiplier = np.nan
@@ -120,6 +121,10 @@ class State:
         self.history_rob.append(robustness)
         self.history_in_radius.append(in_radius)
 
+    def record_maneuver_robustness(self, robustness):
+        """Append maneuver spec robustness to history (None when encounter inactive)."""
+        self.history_maneuver_rob.append(robustness)
+
     def set_current_heading_offset(self, offset_rad: float):
         """Cache the active heading offset (rad) for the next reward computation."""
         self._current_heading_offset = float(offset_rad)
@@ -155,6 +160,7 @@ class State:
         self.history_ego = []
         self.history_enc = []
         self.history_rob = []
+        self.history_maneuver_rob = []
         self.history_in_radius = []
         self.history_speed_multiplier = []
         self._current_speed_multiplier = np.nan

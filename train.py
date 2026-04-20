@@ -46,6 +46,7 @@ def configure_monitoring(env, monitoring_cfg):
     env.maneuver_spec_factory = lambda T_end, _ev=ego_vessel: create_spec(
         "colregs", "maneuver_verified", T_end=T_end, ego_vessel=_ev
     )
+    env.configure_maneuver_monitoring(env.maneuver_spec_factory)
     return True
 
 
