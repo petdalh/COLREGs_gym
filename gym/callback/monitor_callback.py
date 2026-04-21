@@ -6,7 +6,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 
 import wandb
 
-from gym.callback.plotting import plot_episode_trajectory, plot_robustness
+from gym.callback.plotting import plot_episode_trajectory, plot_robustness, plot_speed_multiplier
 
 
 class ColregsMonitorCallback(BaseCallback):
@@ -125,15 +125,17 @@ class ColregsMonitorCallback(BaseCallback):
     def _run_eval_episode(self):
         obs, _ = self.eval_env.reset()
         done = False
+        ep_actions = []
 
         while not done:
             masks = self.eval_env.action_masks()
             action, _ = self.model.predict(obs, action_masks=masks, deterministic=True)
+            ep_actions.append(int(action))
             obs, reward, terminated, truncated, info = self.eval_env.step(action)
             done = terminated or truncated
 
         tag = f"ep{self.episode_count:05d}"
-
+        step_dt = self.eval_env.dt * getattr(self.eval_env, "decision_interval", 5)
 
         plot_episode_trajectory(
             ego_traj=self.eval_env.history_ego,
@@ -145,7 +147,11 @@ class ColregsMonitorCallback(BaseCallback):
             save_path=os.path.join(self.plot_dir, f"traj_{tag}.png"),
         )
 
-        step_dt = self.eval_env.dt * getattr(self.eval_env, "decision_interval", 5)
+        plot_speed_multiplier(
+            history_speed_multiplier=self.eval_env.history_speed_multiplier,
+            dt=self.eval_env.dt,
+            save_path=os.path.join(self.plot_dir, f"speed_{tag}.png"),
+        )
 
         plot_robustness(
             ep_robustness=self.eval_env.history_rob,
@@ -164,11 +170,27 @@ class ColregsMonitorCallback(BaseCallback):
         if wandb.run:
             log_dict = {
                 "trajectory": wandb.Image(os.path.join(self.plot_dir, f"traj_{tag}.png")),
+                "speed_profile": wandb.Image(os.path.join(self.plot_dir, f"speed_{tag}.png")),
                 "robustness/crossing": wandb.Image(os.path.join(self.plot_dir, f"rob_{tag}.png")),
             }
             maneuver_rob_path = os.path.join(self.plot_dir, f"maneuver_rob_{tag}.png")
             if os.path.exists(maneuver_rob_path):
                 log_dict["robustness/maneuver"] = wandb.Image(maneuver_rob_path)
+
+            if ep_actions:
+                vessel_action = self.eval_env.vessel_action
+                n_speed = len(vessel_action.speed_multipliers)
+                speed_choices = [
+                    float(vessel_action.speed_multipliers[a % n_speed])
+                    for a in ep_actions
+                ]
+                heading_choices = [
+                    float(np.degrees(vessel_action.heading_offsets[a // n_speed]))
+                    for a in ep_actions
+                ]
+                log_dict["actions/speed_multiplier"] = wandb.Histogram(speed_choices)
+                log_dict["actions/heading_offset_deg"] = wandb.Histogram(heading_choices)
+
             wandb.log(log_dict)
 
     def _on_training_end(self):

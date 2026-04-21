@@ -1,6 +1,6 @@
 wandb_configuration:
   project: "colregs-ppo"      
-  run_name: test2                
+  run_name: test3                
   group: null                   
   enabled: true
 

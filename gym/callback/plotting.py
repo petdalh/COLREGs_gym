@@ -280,6 +280,33 @@ def plot_episode_trajectory(
         plt.show()
 
 
+def plot_speed_multiplier(
+    history_speed_multiplier: list,
+    dt: float = 0.5,
+    save_path: str | None = None,
+):
+    arr = np.asarray(history_speed_multiplier, dtype=float)
+    times = np.arange(len(arr)) * dt
+    valid = np.isfinite(arr)
+
+    if not np.any(valid):
+        return
+
+    fig, ax = plt.subplots(figsize=(3.6, 1.6))
+    fig.subplots_adjust(bottom=0.28, top=0.95, left=0.12, right=0.97)
+
+    ax.step(times[valid], arr[valid], where="post", color=_EGO_CLR, linewidth=0.8)
+    ax.set_ylabel("Speed multiplier")
+    ax.set_xlabel(r"$t$ (s)")
+    ax.tick_params(top=True, right=True, which="both")
+
+    if save_path:
+        fig.savefig(save_path, format="png")
+        plt.close(fig)
+    else:
+        plt.show()
+
+
 def plot_robustness(
     ep_robustness: list,
     dt: float = 0.5,
