@@ -102,7 +102,7 @@ def plot_episode_trajectory(
     dt: float = 0.5,
     episode_num: int = 1,
     dot_every: int = 60,
-    collision_radius: float = 16.0,
+    collision_radius: float = 0.0,
     save_path: str | None = None,
     ego_speed_traj: list | None = None,
 ):
@@ -299,6 +299,74 @@ def plot_speed_multiplier(
     ax.set_ylabel("Speed multiplier")
     ax.set_xlabel(r"$t$ (s)")
     ax.tick_params(top=True, right=True, which="both")
+
+    if save_path:
+        fig.savefig(save_path, format="png")
+        plt.close(fig)
+    else:
+        plt.show()
+
+
+def plot_control_timeseries(
+    history_heading_deg: list,
+    history_heading_cmd_deg: list,
+    history_heading_error_deg: list,
+    history_surge: list,
+    history_surge_cmd: list,
+    history_tau_surge: list,
+    history_tau_yaw: list,
+    dt: float = 0.5,
+    save_path: str | None = None,
+):
+    n = len(history_heading_deg)
+    if n == 0:
+        return
+
+    times = np.arange(n) * dt
+    hdg = np.asarray(history_heading_deg, dtype=float)
+    hdg_cmd = np.asarray(history_heading_cmd_deg, dtype=float)
+    hdg_err = np.asarray(history_heading_error_deg, dtype=float)
+    surge = np.asarray(history_surge, dtype=float)
+    surge_cmd = np.asarray(history_surge_cmd, dtype=float)
+    tau_s = np.asarray(history_tau_surge, dtype=float)
+    tau_y = np.asarray(history_tau_yaw, dtype=float)
+
+    _CMD_CLR = "#888888"
+    _ERR_CLR = "#c44e52"
+
+    fig, axes = plt.subplots(4, 1, figsize=(3.6, 6.0), sharex=True)
+    fig.subplots_adjust(hspace=0.12, left=0.14, right=0.97, top=0.95, bottom=0.07)
+
+    # Panel 1 — heading
+    axes[0].plot(times, hdg, color=_EGO_CLR, linewidth=0.9, label="Actual")
+    axes[0].plot(times, hdg_cmd, color=_CMD_CLR, linewidth=0.7, linestyle="--", label="Commanded")
+    axes[0].set_ylabel("Heading (°)")
+    axes[0].legend(loc="upper right")
+    axes[0].tick_params(top=True, right=True, which="both")
+
+    # Panel 2 — heading error
+    axes[1].plot(times, hdg_err, color=_ERR_CLR, linewidth=0.9)
+    axes[1].axhline(y=0, color="#555555", linewidth=0.45, linestyle="--", zorder=1)
+    axes[1].fill_between(times, hdg_err, 0, alpha=0.15, color=_ERR_CLR)
+    axes[1].set_ylabel(r"$\psi_d - \psi$ (°)")
+    axes[1].tick_params(top=True, right=True, which="both")
+
+    # Panel 3 — surge velocity
+    axes[2].plot(times, surge, color=_EGO_CLR, linewidth=0.9, label="Actual")
+    axes[2].step(times, surge_cmd, where="post", color=_CMD_CLR,
+                 linewidth=0.7, linestyle="--", label="Commanded")
+    axes[2].set_ylabel("Surge (m/s)")
+    axes[2].legend(loc="upper right")
+    axes[2].tick_params(top=True, right=True, which="both")
+
+    # Panel 4 — actuator effort
+    axes[3].plot(times, tau_s, color=_EGO_CLR, linewidth=0.9, label=r"$\tau_X$")
+    axes[3].plot(times, tau_y, color=_OBS_CLR, linewidth=0.9, label=r"$\tau_N$")
+    axes[3].axhline(y=0, color="#555555", linewidth=0.45, linestyle="--", zorder=1)
+    axes[3].set_ylabel("Actuator effort")
+    axes[3].set_xlabel(r"$t$ (s)")
+    axes[3].legend(loc="upper right")
+    axes[3].tick_params(top=True, right=True, which="both")
 
     if save_path:
         fig.savefig(save_path, format="png")

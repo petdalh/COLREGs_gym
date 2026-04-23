@@ -6,7 +6,12 @@ from stable_baselines3.common.callbacks import BaseCallback
 
 import wandb
 
-from gym.callback.plotting import plot_episode_trajectory, plot_robustness, plot_speed_multiplier
+from gym.callback.plotting import (
+    plot_control_timeseries,
+    plot_episode_trajectory,
+    plot_robustness,
+    plot_speed_multiplier,
+)
 
 
 class ColregsMonitorCallback(BaseCallback):
@@ -42,6 +47,24 @@ class ColregsMonitorCallback(BaseCallback):
         self._rolling_mask_allowed = collections.deque(maxlen=10)
         self._rolling_fallback_rate = collections.deque(maxlen=10)
 
+        self._CONTROL_KEYS = [
+            "control/heading_deg",
+            "control/heading_cmd_deg",
+            "control/heading_error_deg",
+            "control/surge_velocity",
+            "control/surge_cmd",
+            "control/speed_error",
+            "control/sway_velocity",
+            "control/yaw_rate_deg_s",
+            "control/tau_surge",
+            "control/tau_yaw",
+        ]
+        self._ep_control_sums = {k: 0.0 for k in self._CONTROL_KEYS}
+        self._ep_control_steps = 0
+        self._rolling_control_means = {
+            k: collections.deque(maxlen=10) for k in self._CONTROL_KEYS
+        }
+
         os.makedirs(plot_dir, exist_ok=True)
 
     def _on_step(self):
@@ -57,6 +80,13 @@ class ColregsMonitorCallback(BaseCallback):
                 if val is not None:
                     self._ep_reward_sums[key] += float(val)
             self._ep_reward_steps += 1
+
+            for key in self._CONTROL_KEYS:
+                val = info.get(key)
+                if val is not None:
+                    # use abs for error terms so rolling means show magnitude trends
+                    self._ep_control_sums[key] += abs(float(val)) if "error" in key else float(val)
+            self._ep_control_steps += 1
 
             if info.get("encounter_active"):
                 self._ep_mask_allowed.append(info["mask_allowed_count"])
@@ -77,6 +107,14 @@ class ColregsMonitorCallback(BaseCallback):
                         )
                 self._ep_reward_sums = {k: 0.0 for k in self._REWARD_KEYS}
                 self._ep_reward_steps = 0
+
+                if self._ep_control_steps > 0:
+                    for k in self._CONTROL_KEYS:
+                        self._rolling_control_means[k].append(
+                            self._ep_control_sums[k] / self._ep_control_steps
+                        )
+                self._ep_control_sums = {k: 0.0 for k in self._CONTROL_KEYS}
+                self._ep_control_steps = 0
 
                 if self._ep_mask_allowed:
                     self._rolling_mask_allowed.append(float(np.mean(self._ep_mask_allowed)))
@@ -103,6 +141,11 @@ class ColregsMonitorCallback(BaseCallback):
                             masking_log["masking/allowed_actions"] = float(np.mean(self._rolling_mask_allowed))
                         if self._rolling_fallback_rate:
                             masking_log["masking/fallback_rate"] = float(np.mean(self._rolling_fallback_rate))
+                        control_log = {
+                            k: float(np.mean(v))
+                            for k, v in self._rolling_control_means.items()
+                            if v
+                        }
                         wandb.log(
                             {
                                 "episode_count": self.episode_count,
@@ -113,6 +156,7 @@ class ColregsMonitorCallback(BaseCallback):
                                 "timeout_rate": timeouts / 10,
                                 **rew_log,
                                 **masking_log,
+                                **control_log,
                             },
                             step=self.num_timesteps,
                         )
@@ -167,6 +211,18 @@ class ColregsMonitorCallback(BaseCallback):
             title="Maneuver Spec",
         )
 
+        plot_control_timeseries(
+            history_heading_deg=self.eval_env.history_heading_deg,
+            history_heading_cmd_deg=self.eval_env.history_heading_cmd_deg,
+            history_heading_error_deg=self.eval_env.history_heading_error_deg,
+            history_surge=self.eval_env.history_surge,
+            history_surge_cmd=self.eval_env.history_surge_cmd,
+            history_tau_surge=self.eval_env.history_tau_surge,
+            history_tau_yaw=self.eval_env.history_tau_yaw,
+            dt=self.eval_env.dt,
+            save_path=os.path.join(self.plot_dir, f"control_{tag}.png"),
+        )
+
         if wandb.run:
             log_dict = {
                 "trajectory": wandb.Image(os.path.join(self.plot_dir, f"traj_{tag}.png")),
@@ -176,6 +232,10 @@ class ColregsMonitorCallback(BaseCallback):
             maneuver_rob_path = os.path.join(self.plot_dir, f"maneuver_rob_{tag}.png")
             if os.path.exists(maneuver_rob_path):
                 log_dict["robustness/maneuver"] = wandb.Image(maneuver_rob_path)
+
+            control_plot_path = os.path.join(self.plot_dir, f"control_{tag}.png")
+            if os.path.exists(control_plot_path):
+                log_dict["control/timeseries"] = wandb.Image(control_plot_path)
 
             if ep_actions:
                 vessel_action = self.eval_env.vessel_action

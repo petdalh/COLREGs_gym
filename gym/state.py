@@ -1,10 +1,11 @@
 import numpy as np
-from gym.utils.geometry import propagate_vessel
+from gym.utils.geometry import propagate_vessel, wrap_angle
 
 
 class State:
-    def __init__(self, monitoring_radius, n_actions):
+    def __init__(self, monitoring_radius, n_actions, ego_vessel_model):
         self.monitoring_radius = monitoring_radius
+        self.ego_vessel_model = ego_vessel_model
 
         self.encounter_vessel_eta = None
         self._encounter_speed = None
@@ -32,6 +33,15 @@ class State:
         self.history_in_radius = []
         self.history_speed_multiplier = []
         self._current_speed_multiplier = np.nan
+
+        self.history_heading_deg = []
+        self.history_heading_cmd_deg = []
+        self.history_heading_error_deg = []
+        self.history_surge = []
+        self.history_surge_cmd = []
+        self.history_tau_surge = []
+        self.history_tau_yaw = []
+        self._current_tau = np.zeros(3)
 
     def update_sim(self, sim_state):
         """Store the latest sim state snapshot from get_state()."""
@@ -109,12 +119,34 @@ class State:
             or np.any(np.abs(self.sim_state["nu"]) > 1e6)
         )
 
+    def set_current_tau(self, tau: np.ndarray):
+        self._current_tau = np.asarray(tau, dtype=float)
+
     def record(self):
-        """Append current positions to history."""
+        """Append current positions and control state to history."""
         self.history_ego.append(self.sim_state["eta"][:2].tolist())
         if self.encounter_vessel_eta is not None:
             self.history_enc.append(self.encounter_vessel_eta[:2].tolist())
         self.history_speed_multiplier.append(self._current_speed_multiplier)
+
+        psi = float(self.sim_state["eta"][-1])
+        u = float(self.sim_state["nu"][0])
+        self.history_heading_deg.append(float(np.degrees(psi)))
+        self.history_surge.append(u)
+        self.history_surge_cmd.append(float(self._current_speed_multiplier*self.ego_vessel_model.v_max))
+        self.history_tau_surge.append(float(self._current_tau[0]))
+        self.history_tau_yaw.append(float(self._current_tau[2]))
+
+        goal = self.sim_state.get("goal")
+        if goal is not None:
+            eta = self.sim_state["eta"]
+            psi_goal = np.arctan2(float(goal[1]) - float(eta[1]), float(goal[0]) - float(eta[0]))
+            psi_d = psi_goal + self._current_heading_offset
+            self.history_heading_cmd_deg.append(float(np.degrees(psi_d)))
+            self.history_heading_error_deg.append(float(np.degrees(wrap_angle(psi_d - psi))))
+        else:
+            self.history_heading_cmd_deg.append(np.nan)
+            self.history_heading_error_deg.append(np.nan)
 
     def record_robustness(self, robustness, in_radius):
         """Append robustness and radius status to history."""
@@ -164,3 +196,11 @@ class State:
         self.history_in_radius = []
         self.history_speed_multiplier = []
         self._current_speed_multiplier = np.nan
+        self.history_heading_deg = []
+        self.history_heading_cmd_deg = []
+        self.history_heading_error_deg = []
+        self.history_surge = []
+        self.history_surge_cmd = []
+        self.history_tau_surge = []
+        self.history_tau_yaw = []
+        self._current_tau = np.zeros(3)

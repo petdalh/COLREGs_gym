@@ -9,7 +9,7 @@ from gym.state import State
 from gym.termination import Termination
 from gym.truncation import Truncation
 from gym.utils.config import resolve_config
-from gym.utils.geometry import within_monitoring_radius
+from gym.utils.geometry import within_monitoring_radius, wrap_angle
 
 from gymnasium import spaces
 
@@ -23,6 +23,7 @@ class COLREGsGym(McGym):
     def __init__(
         self,
         vessel_model,
+        ego_vessel_model,
         dt=None,
         grid_width=None,
         grid_height=None,
@@ -77,6 +78,7 @@ class COLREGsGym(McGym):
         )
 
         self.vessel_model = vessel_model
+        self.ego_vessel_model = ego_vessel_model
         self.config = config
         self.encounter_scenario = EncounterScenario(
             vessel_model,
@@ -84,7 +86,7 @@ class COLREGsGym(McGym):
             monitoring_radius_safety_factor=monitoring_radius_safety_factor,
             masking_configuration=masking_cfg,
         )
-        self.vessel_action = Action(action_cfg)
+        self.vessel_action = Action(action_cfg, v_max=ego_vessel_model.v_max)
         self.action_space = spaces.Discrete(self.vessel_action.n_actions)
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(9,), dtype=np.float32
@@ -100,11 +102,13 @@ class COLREGsGym(McGym):
             enabled=monitoring_cfg.get("masking_enabled", True),
             action=self.vessel_action,
             vessel_model=vessel_model,
+            ego_vessel_model=ego_vessel_model,
             action_masking_config=masking_cfg,
         )
         self.state = State(
             monitoring_radius=monitoring_radius,
             n_actions=self.vessel_action.n_actions,
+            ego_vessel_model=ego_vessel_model,
         )
         self.observation = Observation(env_cfg.get("observation_configuration", config))
         self.robustness = Robustness(
@@ -167,6 +171,7 @@ class COLREGsGym(McGym):
         h_idx = action // len(self.vessel_action.speed_multipliers)
         self.state.set_current_heading_offset(self.vessel_action.heading_offsets[h_idx])
 
+        last_tau = np.zeros(3)
         for _ in range(self.decision_interval):
             self.state.propagate_encounter(self.dt)
             sim_state = self._sync_runtime_state()
@@ -175,10 +180,12 @@ class COLREGsGym(McGym):
             if terminated:
                 info.update(term_info)
                 break
-
+            
             tau = self.vessel_action.compute(
                 action, sim_state, self._controller
             )
+            last_tau = tau
+            self.state.set_current_tau(tau)
             _, _, terminated, truncated, info = super().step(tau)
             self._step_count += 1
 
@@ -210,6 +217,21 @@ class COLREGsGym(McGym):
         info["encounter_active"] = bool(self.state._encounter_active)
         info["mask_allowed_count"] = int(self.state._cached_mask.sum())
         info["mask_fallback"] = bool(self.state.fallback_used)
+
+        ctrl_sim = self.state.sim_state
+        psi_d, u_d = self.vessel_action.decode_discrete_actions(action, ctrl_sim)
+        psi = float(ctrl_sim["eta"][-1])
+        u = float(ctrl_sim["nu"][0])
+        info["control/heading_deg"] = float(np.degrees(psi))
+        info["control/heading_cmd_deg"] = float(np.degrees(psi_d))
+        info["control/heading_error_deg"] = float(np.degrees(wrap_angle(psi_d - psi)))
+        info["control/surge_velocity"] = u
+        info["control/surge_cmd"] = float(u_d)
+        info["control/speed_error"] = float(u_d - u)
+        info["control/sway_velocity"] = float(ctrl_sim["nu"][1])
+        info["control/yaw_rate_deg_s"] = float(np.degrees(ctrl_sim["nu"][2]))
+        info["control/tau_surge"] = float(last_tau[0])
+        info["control/tau_yaw"] = float(last_tau[2])
 
         if terminated or truncated:
             self.callback.on_episode_end(info, terminated, self.reward)
@@ -266,6 +288,13 @@ class COLREGsGym(McGym):
         self.history_maneuver_rob = self.state.history_maneuver_rob
         self.history_in_radius = self.state.history_in_radius
         self.history_speed_multiplier = self.state.history_speed_multiplier
+        self.history_heading_deg = self.state.history_heading_deg
+        self.history_heading_cmd_deg = self.state.history_heading_cmd_deg
+        self.history_heading_error_deg = self.state.history_heading_error_deg
+        self.history_surge = self.state.history_surge
+        self.history_surge_cmd = self.state.history_surge_cmd
+        self.history_tau_surge = self.state.history_tau_surge
+        self.history_tau_yaw = self.state.history_tau_yaw
 
         if seed is not None:
             self._rng = np.random.default_rng(seed)
