@@ -3,7 +3,7 @@ from gym.utils.discrete_actions import decode_discrete_action
 
 
 class Action:
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, v_max: float):
         action_config = (
             config.get("action_configuration")
             or config.get("action_space")
@@ -14,6 +14,7 @@ class Action:
         self.heading_offsets = np.deg2rad(self.heading_offsets_deg)
         self.speed_multipliers = np.array(action_config["speed_multipliers"])
         self.n_actions = len(self.heading_offsets) * len(self.speed_multipliers)
+        self.v_max = v_max
 
     def decode_discrete_actions(self, action_idx, sim_state):
         return decode_discrete_action(
@@ -21,6 +22,7 @@ class Action:
             sim_state=sim_state,
             heading_offsets=self.heading_offsets,
             speed_multipliers=self.speed_multipliers,
+            v_max=self.v_max,
         )
 
     def compute(self, action, sim_state, controller):
