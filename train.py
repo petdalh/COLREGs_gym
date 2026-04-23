@@ -14,7 +14,7 @@ from gym.utils.config import load_config
 
 try:
     from pacstl.core.factory import create as create_spec
-    from pacstl.domains.colregs.utils import EgoVesselModel, USV_DEFAULT
+    from pacstl.domains.colregs.utils import EGO_VESSEL_DEFAULT, USV_DEFAULT
 except ImportError as exc:
     raise ImportError(
         "This training script requires pacstl to be installed and available."
@@ -35,16 +35,11 @@ def configure_monitoring(env, monitoring_cfg):
         tube,
         sampling_rate=monitoring_cfg.get("robustness_sampling_rate", 5),
     )
-    ego_vessel = EgoVesselModel(
-        # Pull a_max from the already-configured action masker so the spec
-        # uses the same deceleration limit the simulator was given.
-        a_max=env.masking._action_masker.a_max,
-        # Use the environment's own collision threshold as the safety radius.
-        r=env.encounter_scenario.collision_radius,
-        t_h=20.0,
-    )
-    env.maneuver_spec_factory = lambda T_end, _ev=ego_vessel: create_spec(
-        "colregs", "maneuver_verified", T_end=T_end, ego_vessel=_ev
+    ego_vessel = EGO_VESSEL_DEFAULT
+    env.maneuver_spec_factory = lambda T_end, T_start=None, _ev=ego_vessel: create_spec(
+        "colregs", "maneuver_verified", T_end=T_end,
+        **({"T_start": T_start} if T_start is not None else {}),
+        ego_vessel=_ev,
     )
     env.configure_maneuver_monitoring(env.maneuver_spec_factory)
     return True
@@ -57,9 +52,10 @@ def make_env(config, enable_monitoring):
 
     env = COLREGsGym(
         vessel_model=USV_DEFAULT,
+        ego_vessel_model=EGO_VESSEL_DEFAULT,
         config=config,
     )
-
+    
     encounter_cfg.pop("maneuver_horizon", None)
     env.set_encounter(**encounter_cfg)
 

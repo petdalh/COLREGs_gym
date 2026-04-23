@@ -6,15 +6,15 @@ from pacstl.common.interfaces import PACReachableSet, TimeStampedState
 
 from gym.utils.discrete_actions import decode_discrete_action
 from gym.utils.geometry import to_obstacle_frame, within_monitoring_radius, wrap_angle
-from gym.utils.robustness import extract_robustness_upper
+from gym.utils.robustness import extract_robustness_upper, extract_robustness_lower
 
 
 class ActionMasker:
-    def __init__(self, action, vessel_model=None, config=None):
+    def __init__(self, action, vessel_model=None, ego_vessel_model=None, config=None):
         self.heading_offsets = np.asarray(action.heading_offsets, dtype=float)
         self.speed_multipliers = np.asarray(action.speed_multipliers, dtype=float)
         self.n_actions = len(self.heading_offsets) * len(self.speed_multipliers)
-        self.v_max = np.inf
+        self.v_max = ego_vessel_model.v_max
         self.r_max = np.inf
         self.sim_dt = 0.5
         self.k_heading = 1.0
@@ -33,11 +33,8 @@ class ActionMasker:
 
     def configure(self, config=None, vessel_model=None):
         config = dict(config or {})
-
-        v_max = config.get("v_max", getattr(vessel_model, "v_max", np.inf))
         r_max = config.get("r_max", getattr(vessel_model, "yaw_dot_max", np.inf))
 
-        self.v_max = np.inf if v_max is None else float(v_max)
         self.r_max = np.inf if r_max is None else float(r_max)
         self.sim_dt = float(config.get("sim_dt", self.sim_dt))
         self.k_heading = float(config.get("k_heading", self.k_heading))
@@ -122,7 +119,13 @@ class ActionMasker:
             T_end = depth_idx
 
         if T_end not in self._spec_cache:
-            self._spec_cache[T_end] = self._spec_factory(T_end=T_end)
+            if T_end == 0:
+                T_start = 0.0
+            else:
+                T_start = T_end - 2
+                if T_start < 0:
+                    T_start = 0.0
+            self._spec_cache[T_end] = self._spec_factory(T_end=T_end, T_start=T_start)
         return self._spec_cache[T_end]
 
     def get_mask(
@@ -159,25 +162,52 @@ class ActionMasker:
 
         mask = np.zeros(self.n_actions, dtype=bool)
         action_robustness = np.full(self.n_actions, np.inf)
-        candidates = self._candidate_actions(situation)
+        # Sort candidates so larger (more starboard) heading offsets come first.
+        # This makes the dynamic pruning threshold (below) kick in sooner when a
+        # safe action is found early, cutting BFS work for remaining candidates.
+        candidates = sorted(
+            self._candidate_actions(situation),
+            key=lambda a: -self.heading_offsets[a // len(self.speed_multipliers)],
+        )
         _t0 = time.perf_counter()
+        any_safe_found = False  # tracks whether any first_action certified safe so far
 
         for first_action in candidates:
             best_rob = -np.inf  # track best (highest) lower bound seen
             found_safe = False
             # Speed index of the first action — used to fix speed at depth > 0.
             first_s_idx = first_action % len(self.speed_multipliers)
+            # Precompute continuation candidates once per first_action: the filter
+            # depends only on first_s_idx and fix_speed_at_depth, both invariant
+            # for the entire inner BFS, so recomputing inside the loop is wasteful.
+            if self.fix_speed_at_depth:
+                cont_candidates = [
+                    a
+                    for a in candidates
+                    if a % len(self.speed_multipliers) == first_s_idx
+                ]
+            else:
+                cont_candidates = candidates
+            # Once at least one safe action exists, tighten pruning to skip
+            # subtrees that cannot realistically reach the certification margin.
+            effective_pruning = (
+                max(self.pruning_threshold, self.certification_margin - 0.5)
+                if any_safe_found
+                else self.pruning_threshold
+            )
 
             queue = deque(
                 [
                     {
                         "state": ego_state,
                         "trajectory": {},
+                        "partial_tube": {},
                         "depth": 0,
                         "pending_action": first_action,
                     }
                 ]
             )
+
 
             while queue and not found_safe:
                 node = queue.popleft()  # BFS: shallowest nodes first
@@ -187,6 +217,7 @@ class ActionMasker:
                     sim_state=node["state"],
                     heading_offsets=self.heading_offsets,
                     speed_multipliers=self.speed_multipliers,
+                    v_max=self.v_max
                 )
                 next_state, rollout = self._simulate_depth_step(
                     state=node["state"],
@@ -199,47 +230,44 @@ class ActionMasker:
                 trajectory = node["trajectory"] | rollout
 
                 spec = self._get_spec(node["depth"])
-                partial_tube = {t: self.reachable_tube[t] for t in trajectory}
+                # Extend the parent's already-resolved partial_tube by one key
+                # instead of rebuilding it from the full trajectory each time.
+                (target_t,) = rollout  # rollout always contains exactly one entry
+                partial_tube = node["partial_tube"] | {
+                    target_t: self.reachable_tube[target_t]
+                }
                 robustness = spec.evaluate(partial_tube, trajectory)
                 # maneuver_verified: positive robustness = spec satisfied = safe.
                 # Use upper bound (best-case obstacle realisation) to certify
                 # possible safety; use certification_margin (default 0.0, not
                 # the detection robustness_margin) as the threshold.
                 rob_upper = extract_robustness_upper(robustness)
+                rob_lower = extract_robustness_lower(robustness)
 
-                if rob_upper is not None:
-                    best_rob = max(best_rob, rob_upper)
-                    if rob_upper > self.certification_margin:
+                if rob_lower is not None:
+                    best_rob = max(best_rob, rob_lower)
+                    if rob_lower > self.certification_margin:
                         found_safe = True
                         break
                     # Heuristic pruning: if this node's upper bound is so far
                     # below the certification margin that recovery is unlikely,
                     # skip expanding its children.  pruning_threshold defaults
-                    # to -inf (disabled).
+                    # to -inf (disabled); effective_pruning may be tightened
+                    # dynamically once a safe action has already been found.
                     if (
-                        np.isfinite(self.pruning_threshold)
-                        and rob_upper < self.pruning_threshold
+                        np.isfinite(effective_pruning)
+                        and rob_lower < effective_pruning
                     ):
                         continue
 
                 next_depth = node["depth"] + 1
                 if next_depth < effective_depth:
-                    # At depth > 0, optionally fix speed to the first action's
-                    # speed and only vary heading.  This cuts the branching
-                    # factor by len(speed_multipliers) for every inner level.
-                    if self.fix_speed_at_depth and next_depth > 0:
-                        cont_candidates = [
-                            a
-                            for a in candidates
-                            if a % len(self.speed_multipliers) == first_s_idx
-                        ]
-                    else:
-                        cont_candidates = candidates
                     for cont_action in cont_candidates:
                         queue.append(
                             {
                                 "state": next_state,
                                 "trajectory": trajectory,
+                                "partial_tube": partial_tube,
                                 "depth": next_depth,
                                 "pending_action": cont_action,
                             }
@@ -247,6 +275,7 @@ class ActionMasker:
 
             if found_safe:
                 mask[first_action] = True
+                any_safe_found = True
 
             action_robustness[first_action] = best_rob
 
@@ -295,7 +324,7 @@ class ActionMasker:
                     if self.heading_offsets[h_idx] > 0:
                         mask[action_idx] = True
                 print("[ActionMask] Emergency fallback: starboard turns only")
-
+        
         return mask, is_fallback
 
     def _candidate_actions(self, situation):

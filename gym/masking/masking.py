@@ -13,6 +13,7 @@ class Masking:
         enabled=True,
         action=None,
         vessel_model=None,
+        ego_vessel_model=None,
         action_masking_config=None,
     ):
         self.n_actions = n_actions
@@ -25,6 +26,7 @@ class Masking:
         self._action_masker = ActionMasker(
             action=action,
             vessel_model=vessel_model,
+            ego_vessel_model=ego_vessel_model,
             config=self._default_action_masking_config,
         )
 
