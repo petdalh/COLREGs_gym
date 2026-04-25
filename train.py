@@ -35,9 +35,10 @@ def configure_monitoring(env, monitoring_cfg):
         tube,
         sampling_rate=monitoring_cfg.get("robustness_sampling_rate", 5),
     )
+    
     ego_vessel = EGO_VESSEL_DEFAULT
     env.maneuver_spec_factory = lambda T_end, T_start=None, _ev=ego_vessel: create_spec(
-        "colregs", "maneuver_verified", T_end=T_end,
+        "colregs", "occupancy_clear", T_end=T_end,
         **({"T_start": T_start} if T_start is not None else {}),
         ego_vessel=_ev,
     )

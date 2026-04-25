@@ -125,7 +125,7 @@ class ActionMasker:
                 T_start = T_end - 2
                 if T_start < 0:
                     T_start = 0.0
-            self._spec_cache[T_end] = self._spec_factory(T_end=T_end, T_start=T_start)
+            self._spec_cache[T_end] = self._spec_factory(T_end=T_end)
         return self._spec_cache[T_end]
 
     def get_mask(

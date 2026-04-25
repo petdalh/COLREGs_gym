@@ -24,6 +24,7 @@ class ColregsReward(Reward):
         super().__init__(config)  # registers all base handlers
 
         extra_handlers = {
+            "reward_fallback":          self._build_fallback,
             "reward_acceleration":      self._build_acceleration,
             "reward_termination":       self._build_termination,
             "reward_velocity":          self._build_velocity,
@@ -35,6 +36,21 @@ class ColregsReward(Reward):
             cfg = config.get(key, {})
             if cfg.get("is_enabled", False):
                 builder(cfg)
+
+    # ------------------------------------------------------------------ #
+    # reward_fallback                                                     #
+    # ------------------------------------------------------------------ #
+
+    def _build_fallback(self, cfg):
+        self.reward_handlers["reward_fallback"] = partial(
+            self._reward_fallback, cfg["coefficient"]
+        )
+
+    @staticmethod
+    def _reward_fallback(coeff, state, in_radius):
+        if not in_radius or not state.fallback_used:
+            return 0.0
+        return coeff
 
     # ------------------------------------------------------------------ #
     # reward_acceleration                                                 #

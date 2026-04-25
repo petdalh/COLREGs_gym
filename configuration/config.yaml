@@ -1,19 +1,19 @@
 wandb_configuration:
   project: "colregs-ppo"      
-  run_name: test3                
+  run_name: test_actuator_tracking_surge              
   group: null                   
   enabled: true
 
 training_configuration:
   algorithm: PPO
   policy: MlpPolicy
-  remove_existing_logging: false
-  training_timesteps: 1000
+  remove_existing_logging: true
+  training_timesteps: 100000
   checkpoint_dir: checkpoints/ppo_mask
-  checkpoint_freq: 1000
+  checkpoint_freq: 100000
   tensorboard_log: logs/colregs_ppo
   plot_dir: plots
-  plot_every_episodes: 1
+  plot_every_episodes: 50
   policy_net_arch: [128, 128]
   n_steps: 512
   batch_size: 64
@@ -27,19 +27,19 @@ environment_configuration:
   sim_dt: 0.5
 
   action_configuration:
-    heading_offsets_deg: [-20, -15,-10, -5, 0, 5, 10, 15, 20]
-    speed_multipliers: [0.7, 0.8, 0.9, 1.0]
+    heading_offsets_deg: [-20, -15, -10, -5, 0, 10, 15, 20]
+    speed_multipliers: [0.5, 0.8, 1.0]
 
   masking_configuration:
     sim_dt: 0.5
-    k_heading: 1.0
+    k_heading: 0.05
     k_speed: 0.5
     a_max: 0.1
     decision_depth: 2
     certification_margin: 2.0
-    tube_step_factor: 4       # use every 4th tube step per BFS depth
-    fix_speed_at_depth: true  # fix speed at depth > 0, only vary heading
-    pruning_threshold: -5.0   # prune branches > 5 units below cert margin
+    tube_step_factor: 4      
+    fix_speed_at_depth: false  # fix speed at depth > 0, only vary heading
+    pruning_threshold: -2.0
 
   encounter_configuration:
     start_position: [1.5, 7.5, 0.0]
@@ -54,32 +54,18 @@ environment_configuration:
 
   monitoring_configuration:
     masking_enabled: true
-    monitoring_radius: 12.0
-    monitoring_radius_safety_factor: 0.0
-    robustness_margin: 10.0
+    monitoring_radius: 18.0
+    monitoring_radius_safety_factor: 1.0
+    robustness_margin: 14.0
     robustness_sampling_rate: 1
     mask_recompute_interval: 1
 
   reward_configuration:
-    # Base handlers (disabled in favour of ColregsReward equivalents below) 
-    reward_progress: # Redundant with reward_goal_distance; included for reference and potential future use
-      is_enabled: false
-      coefficient: 1.0
-    reward_cte: # Redundant with reward_lateral_deviation; included for reference and potential future use
-      is_enabled: false
-      coefficient: -0.005
-      clip: 5.0
-    reward_speed: # Redundant with reward_velocity; included for reference and potential future use
-      is_enabled: false
-      coefficient: -0.02
-    reward_heading:
-      is_enabled: false
-      coefficient: 0.1
+    # ColregsReward handlers
     reward_fallback:
       is_enabled: false
       coefficient: -1
 
-    # ColregsReward handlers
     reward_acceleration:
       is_enabled: true
       coefficient: -0.05
