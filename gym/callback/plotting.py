@@ -352,9 +352,16 @@ def plot_control_timeseries(
     axes[1].tick_params(top=True, right=True, which="both")
 
     # Panel 3 — surge velocity
+    alpha_ema = 0.1  # ~5 s time constant at dt=0.5, matching MRAC reference model
+    surge_cmd_filtered = np.zeros_like(surge_cmd)
+    surge_cmd_filtered[0] = surge_cmd[0]
+    for i in range(1, len(surge_cmd)):
+        surge_cmd_filtered[i] = alpha_ema * surge_cmd[i] + (1 - alpha_ema) * surge_cmd_filtered[i - 1]
     axes[2].plot(times, surge, color=_EGO_CLR, linewidth=0.9, label="Actual")
     axes[2].step(times, surge_cmd, where="post", color=_CMD_CLR,
-                 linewidth=0.7, linestyle="--", label="Commanded")
+                 linewidth=0.5, linestyle="--", alpha=0.35, label="_nolegend_")
+    axes[2].plot(times, surge_cmd_filtered, color=_CMD_CLR,
+                 linewidth=0.9, linestyle="--", label="Commanded (filtered)")
     axes[2].set_ylabel("Surge (m/s)")
     axes[2].legend(loc="upper right")
     axes[2].tick_params(top=True, right=True, which="both")
