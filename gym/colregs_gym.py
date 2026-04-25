@@ -56,7 +56,10 @@ class COLREGsGym(McGym):
             if sim_dt is not None
             else masking_cfg.get("sim_dt", env_cfg.get("sim_dt", dt))
         )
+        decision_interval = env_cfg.get("decision_interval", 5)
         masking_cfg["sim_dt"] = sim_dt
+        masking_cfg["dt"] = dt
+        masking_cfg["decision_interval"] = decision_interval
         monitoring_radius = (
             monitoring_radius
             if monitoring_radius is not None
@@ -109,6 +112,9 @@ class COLREGsGym(McGym):
             monitoring_radius=monitoring_radius,
             n_actions=self.vessel_action.n_actions,
             ego_vessel_model=ego_vessel_model,
+            initial_surge_command_fraction=env_cfg.get(
+                "initial_surge_command_fraction", 0.8
+            ),
         )
         self.observation = Observation(env_cfg.get("observation_configuration", config))
         self.robustness = Robustness(
@@ -122,7 +128,7 @@ class COLREGsGym(McGym):
         self.termination = Termination()
         self.truncation = Truncation()
         self.callback = EpisodeLogger()
-        self.decision_interval = env_cfg.get("decision_interval", 5)
+        self.decision_interval = decision_interval
 
     def _sync_runtime_state(self):
         sim_state = self.get_state()
@@ -164,12 +170,10 @@ class COLREGsGym(McGym):
         terminated = False
         truncated = False
         info = {}
-        speed_multiplier = self.vessel_action.speed_multipliers[
-            action % len(self.vessel_action.speed_multipliers)
-        ]
-        self.state.set_current_speed_multiplier(speed_multiplier)
-        h_idx = action // len(self.vessel_action.speed_multipliers)
-        self.state.set_current_heading_offset(self.vessel_action.heading_offsets[h_idx])
+        yaw_rate_cmd, surge_accel_cmd = self.vessel_action.decode_discrete_actions(
+            int(action), self.state.sim_state
+        )
+        self.state.set_current_rate_commands(yaw_rate_cmd, surge_accel_cmd)
 
         last_tau = np.zeros(3)
         for _ in range(self.decision_interval):
@@ -181,8 +185,11 @@ class COLREGsGym(McGym):
                 info.update(term_info)
                 break
             
+            psi_d, u_d = self.state.apply_rate_command(
+                yaw_rate_cmd, surge_accel_cmd, self.dt
+            )
             tau = self.vessel_action.compute(
-                action, sim_state, self._controller
+                sim_state, self._controller, psi_d, u_d
             )
             last_tau = tau
             self.state.set_current_tau(tau)
@@ -219,7 +226,8 @@ class COLREGsGym(McGym):
         info["mask_fallback"] = bool(self.state.fallback_used)
 
         ctrl_sim = self.state.sim_state
-        psi_d, u_d = self.vessel_action.decode_discrete_actions(action, ctrl_sim)
+        psi_d = self.state._current_heading_cmd
+        u_d = self.state._current_surge_cmd
         psi = float(ctrl_sim["eta"][-1])
         u = float(ctrl_sim["nu"][0])
         info["control/heading_deg"] = float(np.degrees(psi))
@@ -228,6 +236,8 @@ class COLREGsGym(McGym):
         info["control/surge_velocity"] = u
         info["control/surge_cmd"] = float(u_d)
         info["control/speed_error"] = float(u_d - u)
+        info["control/yaw_rate_cmd_deg_s"] = float(np.degrees(yaw_rate_cmd))
+        info["control/surge_accel_cmd"] = float(surge_accel_cmd)
         info["control/sway_velocity"] = float(ctrl_sim["nu"][1])
         info["control/yaw_rate_deg_s"] = float(np.degrees(ctrl_sim["nu"][2]))
         info["control/tau_surge"] = float(last_tau[0])
@@ -287,12 +297,14 @@ class COLREGsGym(McGym):
         self.history_rob = self.state.history_rob
         self.history_maneuver_rob = self.state.history_maneuver_rob
         self.history_in_radius = self.state.history_in_radius
-        self.history_speed_multiplier = self.state.history_speed_multiplier
+        self.history_surge_command_fraction = self.state.history_surge_command_fraction
         self.history_heading_deg = self.state.history_heading_deg
         self.history_heading_cmd_deg = self.state.history_heading_cmd_deg
         self.history_heading_error_deg = self.state.history_heading_error_deg
         self.history_surge = self.state.history_surge
         self.history_surge_cmd = self.state.history_surge_cmd
+        self.history_yaw_rate_cmd_deg_s = self.state.history_yaw_rate_cmd_deg_s
+        self.history_surge_accel_cmd = self.state.history_surge_accel_cmd
         self.history_tau_surge = self.state.history_tau_surge
         self.history_tau_yaw = self.state.history_tau_yaw
 
@@ -305,6 +317,7 @@ class COLREGsGym(McGym):
         self._step_count = 0
         self._controller = MRACShipController(dt=self.dt)
         self._episode_reward = 0.0
+        self.state.initialize_command_references(self.state.sim_state)
         self.state.record()
 
         return self._obs(), {}

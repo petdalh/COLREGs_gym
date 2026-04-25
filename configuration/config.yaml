@@ -13,7 +13,7 @@ training_configuration:
   checkpoint_freq: 100000
   tensorboard_log: logs/colregs_ppo
   plot_dir: plots
-  plot_every_episodes: 50
+  plot_every_episodes: 1
   policy_net_arch: [128, 128]
   n_steps: 512
   batch_size: 64
@@ -25,20 +25,16 @@ environment_configuration:
   grid_height: 30.0
   decision_interval: 10
   sim_dt: 0.5
+  initial_surge_command_fraction: 0.8
 
   action_configuration:
-    heading_offsets_deg: [-20, -15, -10, -5, 0, 10, 15, 20]
-    speed_multipliers: [0.5, 0.8, 1.0]
+    yaw_rate_commands_deg_s: [-0.5, 0, 0.5]
+    surge_accel_commands: [-0.003, 0.0, 0.003]
 
   masking_configuration:
     sim_dt: 0.5
-    k_heading: 0.05
-    k_speed: 0.5
-    a_max: 0.1
     decision_depth: 2
     certification_margin: 2.0
-    tube_step_factor: 4      
-    fix_speed_at_depth: false  # fix speed at depth > 0, only vary heading
     pruning_threshold: -2.0
 
   encounter_configuration:
@@ -79,7 +75,7 @@ environment_configuration:
 
     reward_velocity:
       is_enabled: true
-      # Set to match active speed_multipliers range
+      # Applied to commanded surge fraction u_d / v_max.
       low_threshold:   0.9
       high_threshold:  1.0
       coefficient:     1.0

@@ -3,9 +3,16 @@ from gym.utils.geometry import propagate_vessel, wrap_angle
 
 
 class State:
-    def __init__(self, monitoring_radius, n_actions, ego_vessel_model):
+    def __init__(
+        self,
+        monitoring_radius,
+        n_actions,
+        ego_vessel_model,
+        initial_surge_command_fraction=0.8,
+    ):
         self.monitoring_radius = monitoring_radius
         self.ego_vessel_model = ego_vessel_model
+        self.initial_surge_command_fraction = float(initial_surge_command_fraction)
 
         self.encounter_vessel_eta = None
         self._encounter_speed = None
@@ -15,7 +22,10 @@ class State:
         self._cached_mask = np.ones(n_actions, dtype=bool)
         self._n_actions = n_actions
 
-        self._current_heading_offset: float = 0.0
+        self._current_heading_cmd: float | None = None
+        self._current_surge_cmd: float | None = None
+        self._current_yaw_rate_cmd: float = 0.0
+        self._current_surge_accel_cmd: float = 0.0
         self.fallback_used: bool = False
 
         self.sim_state = None
@@ -31,14 +41,16 @@ class State:
         self.history_rob = []
         self.history_maneuver_rob = []
         self.history_in_radius = []
-        self.history_speed_multiplier = []
-        self._current_speed_multiplier = np.nan
+        self.history_surge_command_fraction = []
+        self._current_surge_command_fraction = np.nan
 
         self.history_heading_deg = []
         self.history_heading_cmd_deg = []
         self.history_heading_error_deg = []
         self.history_surge = []
         self.history_surge_cmd = []
+        self.history_yaw_rate_cmd_deg_s = []
+        self.history_surge_accel_cmd = []
         self.history_tau_surge = []
         self.history_tau_yaw = []
         self._current_tau = np.zeros(3)
@@ -122,26 +134,73 @@ class State:
     def set_current_tau(self, tau: np.ndarray):
         self._current_tau = np.asarray(tau, dtype=float)
 
+    def initialize_command_references(self, sim_state):
+        """Reset carried MRAC references at the start of an episode."""
+        eta = sim_state["eta"]
+        goal = sim_state.get("goal")
+        if goal is not None:
+            self._current_heading_cmd = float(
+                np.arctan2(float(goal[1]) - float(eta[1]), float(goal[0]) - float(eta[0]))
+            )
+        else:
+            self._current_heading_cmd = float(eta[-1])
+        self._current_surge_cmd = float(
+            self.initial_surge_command_fraction * self.ego_vessel_model.v_max
+        )
+        self._current_surge_command_fraction = (
+            self._current_surge_cmd / self.ego_vessel_model.v_max
+            if self.ego_vessel_model.v_max
+            else np.nan
+        )
+        self._current_yaw_rate_cmd = 0.0
+        self._current_surge_accel_cmd = 0.0
+
+    def apply_rate_command(self, yaw_rate_cmd: float, surge_accel_cmd: float, dt: float):
+        """Integrate held rate commands into carried MRAC references."""
+        if self._current_heading_cmd is None or self._current_surge_cmd is None:
+            self.initialize_command_references(self.sim_state)
+
+        self._current_yaw_rate_cmd = float(yaw_rate_cmd)
+        self._current_surge_accel_cmd = float(surge_accel_cmd)
+        self._current_heading_cmd = float(self._current_heading_cmd + yaw_rate_cmd * dt)
+        self._current_surge_cmd = float(
+            np.clip(
+                self._current_surge_cmd + surge_accel_cmd * dt,
+                0.0,
+                self.ego_vessel_model.v_max,
+            )
+        )
+        self._current_surge_command_fraction = (
+            self._current_surge_cmd / self.ego_vessel_model.v_max
+            if self.ego_vessel_model.v_max
+            else np.nan
+        )
+        return self._current_heading_cmd, self._current_surge_cmd
+
+    def set_current_rate_commands(self, yaw_rate_cmd: float, surge_accel_cmd: float):
+        self._current_yaw_rate_cmd = float(yaw_rate_cmd)
+        self._current_surge_accel_cmd = float(surge_accel_cmd)
+
     def record(self):
         """Append current positions and control state to history."""
         self.history_ego.append(self.sim_state["eta"][:2].tolist())
         if self.encounter_vessel_eta is not None:
             self.history_enc.append(self.encounter_vessel_eta[:2].tolist())
-        self.history_speed_multiplier.append(self._current_speed_multiplier)
+        self.history_surge_command_fraction.append(self._current_surge_command_fraction)
 
         psi = float(self.sim_state["eta"][-1])
         u = float(self.sim_state["nu"][0])
         self.history_heading_deg.append(float(np.degrees(psi)))
         self.history_surge.append(u)
-        self.history_surge_cmd.append(float(self._current_speed_multiplier*self.ego_vessel_model.v_max))
+        surge_cmd = np.nan if self._current_surge_cmd is None else self._current_surge_cmd
+        self.history_surge_cmd.append(float(surge_cmd))
+        self.history_yaw_rate_cmd_deg_s.append(float(np.degrees(self._current_yaw_rate_cmd)))
+        self.history_surge_accel_cmd.append(float(self._current_surge_accel_cmd))
         self.history_tau_surge.append(float(self._current_tau[0]))
         self.history_tau_yaw.append(float(self._current_tau[2]))
 
-        goal = self.sim_state.get("goal")
-        if goal is not None:
-            eta = self.sim_state["eta"]
-            psi_goal = np.arctan2(float(goal[1]) - float(eta[1]), float(goal[0]) - float(eta[0]))
-            psi_d = psi_goal + self._current_heading_offset
+        if self._current_heading_cmd is not None:
+            psi_d = self._current_heading_cmd
             self.history_heading_cmd_deg.append(float(np.degrees(psi_d)))
             self.history_heading_error_deg.append(float(np.degrees(wrap_angle(psi_d - psi))))
         else:
@@ -157,17 +216,6 @@ class State:
         """Append maneuver spec robustness to history (None when encounter inactive)."""
         self.history_maneuver_rob.append(robustness)
 
-    def set_current_heading_offset(self, offset_rad: float):
-        """Cache the active heading offset (rad) for the next reward computation."""
-        self._current_heading_offset = float(offset_rad)
-
-    def set_current_speed_multiplier(self, speed_multiplier):
-        """Cache the active speed multiplier for the next record() call."""
-        if speed_multiplier is None:
-            self._current_speed_multiplier = np.nan
-        else:
-            self._current_speed_multiplier = float(speed_multiplier)
-
     def clear_encounter(self):
         """Reset encounter state when vessel leaves monitoring radius."""
         self._encounter_active = False
@@ -181,7 +229,10 @@ class State:
         self._encounter_active = False
         self._active_maneuver_spec = None
         self._cached_mask = np.ones(self._n_actions, dtype=bool)
-        self._current_heading_offset = 0.0
+        self._current_heading_cmd = None
+        self._current_surge_cmd = None
+        self._current_yaw_rate_cmd = 0.0
+        self._current_surge_accel_cmd = 0.0
         self.fallback_used = False
         self.sim_state = None
         self.in_monitoring_radius = None
@@ -194,13 +245,15 @@ class State:
         self.history_rob = []
         self.history_maneuver_rob = []
         self.history_in_radius = []
-        self.history_speed_multiplier = []
-        self._current_speed_multiplier = np.nan
+        self.history_surge_command_fraction = []
+        self._current_surge_command_fraction = np.nan
         self.history_heading_deg = []
         self.history_heading_cmd_deg = []
         self.history_heading_error_deg = []
         self.history_surge = []
         self.history_surge_cmd = []
+        self.history_yaw_rate_cmd_deg_s = []
+        self.history_surge_accel_cmd = []
         self.history_tau_surge = []
         self.history_tau_yaw = []
         self._current_tau = np.zeros(3)

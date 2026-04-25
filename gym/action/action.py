@@ -10,22 +10,23 @@ class Action:
             or config
         )
 
-        self.heading_offsets_deg = np.array(action_config["heading_offsets_deg"])
-        self.heading_offsets = np.deg2rad(self.heading_offsets_deg)
-        self.speed_multipliers = np.array(action_config["speed_multipliers"])
-        self.n_actions = len(self.heading_offsets) * len(self.speed_multipliers)
+        self.yaw_rate_commands_deg_s = np.array(
+            action_config["yaw_rate_commands_deg_s"], dtype=float
+        )
+        self.yaw_rate_commands = np.deg2rad(self.yaw_rate_commands_deg_s)
+        self.surge_accel_commands = np.array(
+            action_config["surge_accel_commands"], dtype=float
+        )
+        self.n_actions = len(self.yaw_rate_commands) * len(self.surge_accel_commands)
         self.v_max = v_max
 
     def decode_discrete_actions(self, action_idx, sim_state):
         return decode_discrete_action(
             action_idx=action_idx,
-            sim_state=sim_state,
-            heading_offsets=self.heading_offsets,
-            speed_multipliers=self.speed_multipliers,
-            v_max=self.v_max,
+            yaw_rate_commands=self.yaw_rate_commands,
+            surge_accel_commands=self.surge_accel_commands,
         )
 
-    def compute(self, action, sim_state, controller):
-        """Decode the discrete action and compute the control torques."""
-        psi_d, u_d = self.decode_discrete_actions(action, sim_state)
+    def compute(self, sim_state, controller, psi_d, u_d):
+        """Compute control torques for the current carried references."""
         return controller.compute_action_minimal(sim_state, psi_d, u_d)

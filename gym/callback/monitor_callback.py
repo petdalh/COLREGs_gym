@@ -10,7 +10,7 @@ from gym.callback.plotting import (
     plot_control_timeseries,
     plot_episode_trajectory,
     plot_robustness,
-    plot_speed_multiplier,
+    plot_surge_command_fraction,
 )
 
 
@@ -54,6 +54,8 @@ class ColregsMonitorCallback(BaseCallback):
             "control/surge_velocity",
             "control/surge_cmd",
             "control/speed_error",
+            "control/yaw_rate_cmd_deg_s",
+            "control/surge_accel_cmd",
             "control/sway_velocity",
             "control/yaw_rate_deg_s",
             "control/tau_surge",
@@ -183,7 +185,7 @@ class ColregsMonitorCallback(BaseCallback):
 
         plot_episode_trajectory(
             ego_traj=self.eval_env.history_ego,
-            ego_speed_traj=self.eval_env.history_speed_multiplier,
+            ego_speed_traj=self.eval_env.history_surge_command_fraction,
             enc_traj=self.eval_env.history_enc,
             goal=self.eval_env.goal[:2],
             dt=self.eval_env.dt,
@@ -191,8 +193,8 @@ class ColregsMonitorCallback(BaseCallback):
             save_path=os.path.join(self.plot_dir, f"traj_{tag}.png"),
         )
 
-        plot_speed_multiplier(
-            history_speed_multiplier=self.eval_env.history_speed_multiplier,
+        plot_surge_command_fraction(
+            history_surge_command_fraction=self.eval_env.history_surge_command_fraction,
             dt=self.eval_env.dt,
             save_path=os.path.join(self.plot_dir, f"speed_{tag}.png"),
         )
@@ -239,17 +241,17 @@ class ColregsMonitorCallback(BaseCallback):
 
             if ep_actions:
                 vessel_action = self.eval_env.vessel_action
-                n_speed = len(vessel_action.speed_multipliers)
-                speed_choices = [
-                    float(vessel_action.speed_multipliers[a % n_speed])
+                n_accel = len(vessel_action.surge_accel_commands)
+                accel_choices = [
+                    float(vessel_action.surge_accel_commands[a % n_accel])
                     for a in ep_actions
                 ]
-                heading_choices = [
-                    float(np.degrees(vessel_action.heading_offsets[a // n_speed]))
+                yaw_rate_choices = [
+                    float(vessel_action.yaw_rate_commands_deg_s[a // n_accel])
                     for a in ep_actions
                 ]
-                log_dict["actions/speed_multiplier"] = wandb.Histogram(speed_choices)
-                log_dict["actions/heading_offset_deg"] = wandb.Histogram(heading_choices)
+                log_dict["actions/surge_accel_cmd"] = wandb.Histogram(accel_choices)
+                log_dict["actions/yaw_rate_cmd_deg_s"] = wandb.Histogram(yaw_rate_choices)
 
             wandb.log(log_dict)
 

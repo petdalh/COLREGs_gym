@@ -13,8 +13,8 @@ class ColregsReward(Reward):
     Extends the base Reward class with reward terms ported from ColregsReward
     (E. Meyer et al., COLREG-Compliant Collision Avoidance for USV Using DRL).
 
-    Crossing-only: reverse-driving penalties are omitted
-    (speed_multiplier never goes negative in the discrete action space).
+    Crossing-only: reverse-driving penalties are omitted because surge commands
+    are clipped non-negative.
 
     All parameters are read exclusively from the config dict — no values are
     inferred from the action space or environment configuration.
@@ -57,25 +57,31 @@ class ColregsReward(Reward):
     # ------------------------------------------------------------------ #
 
     def _build_acceleration(self, cfg):
-        self._prev_speed_multiplier = None
+        self._prev_yaw_rate_cmd_deg_s = None
+        self._prev_surge_accel_cmd = None
         self.reward_handlers["reward_acceleration"] = partial(
             self._reward_acceleration, cfg["coefficient"]
         )
-        self.reward_reset_handlers["reward_acceleration"] = lambda: setattr(
-            self, "_prev_speed_multiplier", None
-        )
+        self.reward_reset_handlers["reward_acceleration"] = self._reset_acceleration
+
+    def _reset_acceleration(self):
+        self._prev_yaw_rate_cmd_deg_s = None
+        self._prev_surge_accel_cmd = None
 
     def _reward_acceleration(self, coeff, state, in_radius):
-        kappa = state._current_speed_multiplier
-        if np.isnan(kappa):
+        yaw_rate_cmd_deg_s = float(np.degrees(state._current_yaw_rate_cmd))
+        surge_accel_cmd = float(state._current_surge_accel_cmd)
+
+        if self._prev_yaw_rate_cmd_deg_s is None:
+            self._prev_yaw_rate_cmd_deg_s = yaw_rate_cmd_deg_s
+            self._prev_surge_accel_cmd = surge_accel_cmd
             return 0.0
 
-        if self._prev_speed_multiplier is None:
-            self._prev_speed_multiplier = kappa
-            return 0.0
-
-        delta = abs(kappa - self._prev_speed_multiplier)
-        self._prev_speed_multiplier = kappa
+        delta = abs(yaw_rate_cmd_deg_s - self._prev_yaw_rate_cmd_deg_s) + abs(
+            surge_accel_cmd - self._prev_surge_accel_cmd
+        )
+        self._prev_yaw_rate_cmd_deg_s = yaw_rate_cmd_deg_s
+        self._prev_surge_accel_cmd = surge_accel_cmd
         return coeff * delta
 
     # ------------------------------------------------------------------ #
@@ -118,7 +124,7 @@ class ColregsReward(Reward):
 
     @staticmethod
     def _reward_velocity(low_thr, high_thr, coeff, state, in_radius):
-        v = state._current_speed_multiplier
+        v = state._current_surge_command_fraction
         if np.isnan(v):
             return 0.0
         penalty = 0.0

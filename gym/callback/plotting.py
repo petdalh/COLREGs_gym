@@ -52,46 +52,47 @@ _EGO_CLR = "#2060a8"  # steel blue
 _OBS_CLR = "#c44e52"  # muted red
 _GOAL_CLR = "#4a9c5e"  # forest green
 _CMAP = "viridis"
-_DEFAULT_SPEED_MULTIPLIERS = np.array([0.7, 0.8, 0.9, 1.0], dtype=float)
+_DEFAULT_COMMAND_FRACTIONS = np.linspace(0.0, 1.0, 5, dtype=float)
 _DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configuration" / "config.yaml"
 
 
-def _parse_speed_multipliers_line(config_path: Path) -> np.ndarray:
+def _parse_surge_command_bounds(config_path: Path) -> np.ndarray:
     for line in config_path.read_text().splitlines():
         line = line.split("#", 1)[0].strip()
-        if not line.startswith("speed_multipliers:"):
+        if not line.startswith("surge_accel_commands:"):
             continue
 
-        speed_multipliers = literal_eval(line.split(":", 1)[1].strip())
-        return np.asarray(speed_multipliers, dtype=float)
+        surge_accel_commands = literal_eval(line.split(":", 1)[1].strip())
+        if np.asarray(surge_accel_commands, dtype=float).size:
+            return _DEFAULT_COMMAND_FRACTIONS
 
-    raise KeyError("speed_multipliers")
+    raise KeyError("surge_accel_commands")
 
 
-def _load_speed_multipliers(config_path: Path = _DEFAULT_CONFIG_PATH) -> np.ndarray:
+def _load_command_fractions(config_path: Path = _DEFAULT_CONFIG_PATH) -> np.ndarray:
     try:
         try:
             from gym.utils.config import load_config
 
-            config = load_config(str(config_path))
-            speed_multipliers = config["environment_configuration"]["action_configuration"][
-                "speed_multipliers"
+            load_config(str(config_path))["environment_configuration"]["action_configuration"][
+                "surge_accel_commands"
             ]
+            command_fractions = _DEFAULT_COMMAND_FRACTIONS
         except ModuleNotFoundError:
-            speed_multipliers = _parse_speed_multipliers_line(config_path)
-        speed_multipliers = np.asarray(speed_multipliers, dtype=float)
+            command_fractions = _parse_surge_command_bounds(config_path)
+        command_fractions = np.asarray(command_fractions, dtype=float)
     except (FileNotFoundError, KeyError, SyntaxError, TypeError, ValueError):
-        return _DEFAULT_SPEED_MULTIPLIERS
+        return _DEFAULT_COMMAND_FRACTIONS
 
-    if speed_multipliers.size == 0 or not np.all(np.isfinite(speed_multipliers)):
-        return _DEFAULT_SPEED_MULTIPLIERS
-    return speed_multipliers
+    if command_fractions.size == 0 or not np.all(np.isfinite(command_fractions)):
+        return _DEFAULT_COMMAND_FRACTIONS
+    return command_fractions
 
 
-_SPEED_MULTIPLIERS = _load_speed_multipliers()
+_COMMAND_FRACTIONS = _load_command_fractions()
 _SPEED_NORM = Normalize(
-    vmin=float(np.min(_SPEED_MULTIPLIERS)),
-    vmax=float(np.max(_SPEED_MULTIPLIERS)),
+    vmin=float(np.min(_COMMAND_FRACTIONS)),
+    vmax=float(np.max(_COMMAND_FRACTIONS)),
 )
 
 
@@ -146,9 +147,9 @@ def plot_episode_trajectory(
             # invisible line just for the legend entry
             ax.plot([], [], color=_EGO_CLR, linewidth=1.2, label="Ego vessel")
             cbar = fig.colorbar(lc, ax=ax, pad=0.03, fraction=0.046, aspect=28)
-            cbar.set_ticks(_SPEED_MULTIPLIERS)
+            cbar.set_ticks(_COMMAND_FRACTIONS)
             cbar.ax.tick_params(labelsize=7, width=0.4, length=2)
-            cbar.set_label("Speed multiplier", fontsize=8, labelpad=3)
+            cbar.set_label(r"$u_d / v_{\max}$", fontsize=8, labelpad=3)
             cbar.outline.set_linewidth(0.4)
         else:
             ax.plot(
@@ -280,12 +281,12 @@ def plot_episode_trajectory(
         plt.show()
 
 
-def plot_speed_multiplier(
-    history_speed_multiplier: list,
+def plot_surge_command_fraction(
+    history_surge_command_fraction: list,
     dt: float = 0.5,
     save_path: str | None = None,
 ):
-    arr = np.asarray(history_speed_multiplier, dtype=float)
+    arr = np.asarray(history_surge_command_fraction, dtype=float)
     times = np.arange(len(arr)) * dt
     valid = np.isfinite(arr)
 
@@ -296,7 +297,7 @@ def plot_speed_multiplier(
     fig.subplots_adjust(bottom=0.28, top=0.95, left=0.12, right=0.97)
 
     ax.step(times[valid], arr[valid], where="post", color=_EGO_CLR, linewidth=0.8)
-    ax.set_ylabel("Speed multiplier")
+    ax.set_ylabel(r"$u_d / v_{\max}$")
     ax.set_xlabel(r"$t$ (s)")
     ax.tick_params(top=True, right=True, which="both")
 
@@ -357,11 +358,11 @@ def plot_control_timeseries(
     surge_cmd_filtered[0] = surge_cmd[0]
     for i in range(1, len(surge_cmd)):
         surge_cmd_filtered[i] = alpha_ema * surge_cmd[i] + (1 - alpha_ema) * surge_cmd_filtered[i - 1]
-    axes[2].plot(times, surge, color=_EGO_CLR, linewidth=0.9, label="Actual")
+    axes[2].plot(times, surge, color=_EGO_CLR, linewidth=0.9, label="Actual surge")
     axes[2].step(times, surge_cmd, where="post", color=_CMD_CLR,
                  linewidth=0.5, linestyle="--", alpha=0.35, label="_nolegend_")
     axes[2].plot(times, surge_cmd_filtered, color=_CMD_CLR,
-                 linewidth=0.9, linestyle="--", label="Commanded (filtered)")
+                 linewidth=0.9, linestyle="--", label="Commanded surge (filtered)")
     axes[2].set_ylabel("Surge (m/s)")
     axes[2].legend(loc="upper right")
     axes[2].tick_params(top=True, right=True, which="both")

@@ -11,15 +11,17 @@ from gym.utils.robustness import extract_robustness_upper, extract_robustness_lo
 
 class ActionMasker:
     def __init__(self, action, vessel_model=None, ego_vessel_model=None, config=None):
-        self.heading_offsets = np.asarray(action.heading_offsets, dtype=float)
-        self.speed_multipliers = np.asarray(action.speed_multipliers, dtype=float)
-        self.n_actions = len(self.heading_offsets) * len(self.speed_multipliers)
+        self.yaw_rate_commands = np.asarray(action.yaw_rate_commands, dtype=float)
+        self.yaw_rate_commands_deg_s = np.asarray(
+            action.yaw_rate_commands_deg_s, dtype=float
+        )
+        self.surge_accel_commands = np.asarray(action.surge_accel_commands, dtype=float)
+        self.n_actions = len(self.yaw_rate_commands) * len(self.surge_accel_commands)
         self.v_max = ego_vessel_model.v_max
-        self.r_max = np.inf
+        self.dt = 0.5
         self.sim_dt = 0.5
-        self.k_heading = 1.0
-        self.k_speed = 0.5
-        self.a_max = 0.1
+        self.decision_interval = 1
+        self.action_hold_dt = self.dt * self.decision_interval
         self.decision_depth = 5
         self.configure(config=config, vessel_model=vessel_model)
 
@@ -33,28 +35,46 @@ class ActionMasker:
 
     def configure(self, config=None, vessel_model=None):
         config = dict(config or {})
-        r_max = config.get("r_max", getattr(vessel_model, "yaw_dot_max", np.inf))
 
-        self.r_max = np.inf if r_max is None else float(r_max)
+        self.dt = float(config.get("dt", self.dt))
         self.sim_dt = float(config.get("sim_dt", self.sim_dt))
-        self.k_heading = float(config.get("k_heading", self.k_heading))
-        self.k_speed = float(config.get("k_speed", self.k_speed))
-        self.a_max = float(config.get("a_max", self.a_max))
+        self.decision_interval = int(
+            config.get("decision_interval", self.decision_interval)
+        )
+        self.action_hold_dt = self.dt * self.decision_interval
         self.decision_depth = int(config.get("decision_depth", self.decision_depth))
         # Separate from the detection margin: threshold for certifying an action
         # as safe.  0.0 means "spec is satisfied", the spec's own physical
         # parameters (r_ego, t_h) already encode the safety margin.
         self.certification_margin = float(config.get("certification_margin", 0.0))
-        # Subsample the reachable tube: use every tube_step_factor-th time step.
-        # Larger values -> coarser temporal resolution but longer lookahead per
-        # BFS depth, which often lets the maneuver take effect sooner.
-        self.tube_step_factor = int(config.get("tube_step_factor", 1))
-        # At depth > 0, fix the speed multiplier to the one chosen at depth 0
-        # and only vary heading. Reduces branching factor by len(speed_multipliers).
-        self.fix_speed_at_depth = bool(config.get("fix_speed_at_depth", False))
         # Heuristic pruning: skip expanding a node's children when its upper
         # robustness bound is below this threshold (default -inf = no pruning).
         self.pruning_threshold = float(config.get("pruning_threshold", -np.inf))
+
+    def _aligned_tube_steps(self):
+        aligned_steps = []
+        tube_steps = list(self.tube_time_steps)
+        for depth_idx in range(self.decision_depth):
+            target_t = (depth_idx + 1) * self.action_hold_dt
+            match = next(
+                (
+                    step
+                    for step in tube_steps
+                    if np.isclose(float(step), target_t, rtol=0.0, atol=1e-9)
+                ),
+                None,
+            )
+            if match is None:
+                break
+            aligned_steps.append(match)
+        return aligned_steps
+
+    def _decode_action(self, action_idx):
+        return decode_discrete_action(
+            action_idx=action_idx,
+            yaw_rate_commands=self.yaw_rate_commands,
+            surge_accel_commands=self.surge_accel_commands,
+        )
 
     def update_scenario(
         self, spec, ellipsoids_Ab_dict, encounter_scenario=None, spec_factory=None
@@ -108,7 +128,7 @@ class ActionMasker:
             return self.spec
 
         # Compute T_end: real-time distance from the first to the current step.
-        # Uses _search_tube_steps (which may be a subsampled view of tube_time_steps)
+        # Uses _search_tube_steps (the action-hold-aligned view of tube_time_steps)
         # so that T_end reflects the actual simulation time at this BFS depth.
         search_steps = getattr(self, "_search_tube_steps", self.tube_time_steps)
         if search_steps:
@@ -146,48 +166,45 @@ class ActionMasker:
         ) or self.ellipsoids_Ab_dict is None:
             return mask, is_fallback
 
-        monitoring_state = ego_state if state is None else state
         if not within_monitoring_radius(
-            encounter_vessel_eta, monitoring_radius, monitoring_state
+            encounter_vessel_eta, monitoring_radius, ego_state
         ):
             return mask, is_fallback
 
-        # Build the subsampled time step list for this search.  Stored as an
+        # Build the action-hold-aligned time step list for this search.  Stored as an
         # instance variable so _simulate_depth_step and _get_spec can read it
         # without needing a changed signature.
-        self._search_tube_steps = self.tube_time_steps[:: self.tube_step_factor]
+        self._search_tube_steps = self._aligned_tube_steps()
         effective_depth = min(self.decision_depth, len(self._search_tube_steps))
         if effective_depth == 0:
             return mask, is_fallback
 
         mask = np.zeros(self.n_actions, dtype=bool)
         action_robustness = np.full(self.n_actions, np.inf)
-        # Sort candidates so larger (more starboard) heading offsets come first.
+        # Sort candidates so larger (more starboard) yaw rates come first.
         # This makes the dynamic pruning threshold (below) kick in sooner when a
         # safe action is found early, cutting BFS work for remaining candidates.
         candidates = sorted(
             self._candidate_actions(situation),
-            key=lambda a: -self.heading_offsets[a // len(self.speed_multipliers)],
+            key=lambda a: -self.yaw_rate_commands[a // len(self.surge_accel_commands)],
         )
         _t0 = time.perf_counter()
         any_safe_found = False  # tracks whether any first_action certified safe so far
+        initial_cmd_psi = (
+            float(state._current_heading_cmd)
+            if state is not None and state._current_heading_cmd is not None
+            else float(ego_state["eta"][-1])
+        )
+        initial_cmd_u = (
+            float(state._current_surge_cmd)
+            if state is not None and state._current_surge_cmd is not None
+            else float(ego_state["nu"][0])
+        )
 
         for first_action in candidates:
             best_rob = -np.inf  # track best (highest) lower bound seen
             found_safe = False
-            # Speed index of the first action — used to fix speed at depth > 0.
-            first_s_idx = first_action % len(self.speed_multipliers)
-            # Precompute continuation candidates once per first_action: the filter
-            # depends only on first_s_idx and fix_speed_at_depth, both invariant
-            # for the entire inner BFS, so recomputing inside the loop is wasteful.
-            if self.fix_speed_at_depth:
-                cont_candidates = [
-                    a
-                    for a in candidates
-                    if a % len(self.speed_multipliers) == first_s_idx
-                ]
-            else:
-                cont_candidates = candidates
+            cont_candidates = candidates
             # Once at least one safe action exists, tighten pruning to skip
             # subtrees that cannot realistically reach the certification margin.
             effective_pruning = (
@@ -204,6 +221,8 @@ class ActionMasker:
                         "partial_tube": {},
                         "depth": 0,
                         "pending_action": first_action,
+                        "cmd_psi": initial_cmd_psi,
+                        "cmd_u": initial_cmd_u,
                     }
                 ]
             )
@@ -212,17 +231,15 @@ class ActionMasker:
             while queue and not found_safe:
                 node = queue.popleft()  # BFS: shallowest nodes first
 
-                psi_d, u_d = decode_discrete_action(
-                    action_idx=node["pending_action"],
-                    sim_state=node["state"],
-                    heading_offsets=self.heading_offsets,
-                    speed_multipliers=self.speed_multipliers,
-                    v_max=self.v_max
+                yaw_rate_cmd, surge_accel_cmd = self._decode_action(
+                    node["pending_action"]
                 )
                 next_state, rollout = self._simulate_depth_step(
                     state=node["state"],
-                    psi_d=psi_d,
-                    u_d=u_d,
+                    cmd_psi=node["cmd_psi"],
+                    cmd_u=node["cmd_u"],
+                    yaw_rate_cmd=yaw_rate_cmd,
+                    surge_accel_cmd=surge_accel_cmd,
                     depth_idx=node["depth"],
                     encounter_vessel_eta=encounter_vessel_eta,
                     encounter_speed=encounter_speed,
@@ -270,6 +287,8 @@ class ActionMasker:
                                 "partial_tube": partial_tube,
                                 "depth": next_depth,
                                 "pending_action": cont_action,
+                                "cmd_psi": float(next_state["eta"][-1]),
+                                "cmd_u": float(next_state["nu"][0]),
                             }
                         )
 
@@ -294,13 +313,13 @@ class ActionMasker:
 
             if candidate_rob:
                 max_rob = max(candidate_rob.values())
-                # Fallback: only allow starboard turns (positive heading offset)
+                # Fallback: only allow starboard turns (positive yaw rate)
                 # within 0.1 of the best robustness.  This prevents the agent
                 # from choosing port or straight-ahead actions in a crossing
                 # situation where no certified safe action exists.
                 for idx, rob in candidate_rob.items():
-                    h_idx = idx // len(self.speed_multipliers)
-                    if rob >= max_rob - 0.1 and self.heading_offsets[h_idx] > 0:
+                    yaw_idx = idx // len(self.surge_accel_commands)
+                    if rob >= max_rob - 0.1 and self.yaw_rate_commands[yaw_idx] > 0:
                         mask[idx] = True
 
                 if not mask.any():
@@ -308,8 +327,8 @@ class ActionMasker:
                     # (e.g. the best action was straight-ahead).  Open to all
                     # starboard turns regardless of robustness ranking.
                     for idx in candidate_rob:
-                        h_idx = idx // len(self.speed_multipliers)
-                        if self.heading_offsets[h_idx] > 0:
+                        yaw_idx = idx // len(self.surge_accel_commands)
+                        if self.yaw_rate_commands[yaw_idx] > 0:
                             mask[idx] = True
 
                 print(
@@ -320,8 +339,8 @@ class ActionMasker:
                 )
             else:
                 for action_idx in candidates:
-                    h_idx = action_idx // len(self.speed_multipliers)
-                    if self.heading_offsets[h_idx] > 0:
+                    yaw_idx = action_idx // len(self.surge_accel_commands)
+                    if self.yaw_rate_commands[yaw_idx] > 0:
                         mask[action_idx] = True
                 print("[ActionMask] Emergency fallback: starboard turns only")
         
@@ -330,8 +349,8 @@ class ActionMasker:
     def _candidate_actions(self, situation):
         candidates = []
         for action_idx in range(self.n_actions):
-            h_idx = action_idx // len(self.speed_multipliers)
-            if situation == "crossing" and self.heading_offsets[h_idx] < 0:
+            yaw_idx = action_idx // len(self.surge_accel_commands)
+            if situation == "crossing" and self.yaw_rate_commands[yaw_idx] < 0:
                 continue
             candidates.append(action_idx)
         return candidates
@@ -339,8 +358,10 @@ class ActionMasker:
     def _simulate_depth_step(
         self,
         state,
-        psi_d,
-        u_d,
+        cmd_psi,
+        cmd_u,
+        yaw_rate_cmd,
+        surge_accel_cmd,
         depth_idx,
         encounter_vessel_eta,
         encounter_speed,
@@ -351,9 +372,10 @@ class ActionMasker:
         is in obstacle-relative frame. encounter_vessel_eta is the current (t=0)
         obstacle position; obstacle is linearly extrapolated to target_t.
         """
-        eta, nu = state["eta"], state["nu"]
-        px, py, psi = eta[0], eta[1], float(eta[-1])
-        u = float(nu[0])
+        eta = state["eta"]
+        px, py = eta[0], eta[1]
+        psi = float(cmd_psi)
+        u = float(cmd_u)
 
         obs_n, obs_e, obs_psi = encounter_vessel_eta
         obs_vn = encounter_speed * np.cos(obs_psi)
@@ -367,17 +389,15 @@ class ActionMasker:
         while t < target_t - 1e-9:
             dt_step = min(self.sim_dt, target_t - t)
 
-            heading_error = wrap_angle(psi_d - psi)
-            omega = np.clip(self.k_heading * heading_error, -self.r_max, self.r_max)
+            psi_next = psi + yaw_rate_cmd * dt_step
+            u_next = float(np.clip(u + surge_accel_cmd * dt_step, 0.0, self.v_max))
+            avg_psi = psi + 0.5 * yaw_rate_cmd * dt_step
+            avg_u = 0.5 * (u + u_next)
 
-            speed_error = u_d - u
-            a = np.clip(self.k_speed * speed_error, -self.a_max, self.a_max)
-
-            px += np.cos(psi) * u * dt_step
-            py += np.sin(psi) * u * dt_step
-            psi += omega * dt_step
-            u += a * dt_step
-            u = np.clip(u, 0.0, self.v_max)
+            px += np.cos(avg_psi) * avg_u * dt_step
+            py += np.sin(avg_psi) * avg_u * dt_step
+            psi = psi_next
+            u = u_next
             t += dt_step
 
         vn = u * np.cos(psi)

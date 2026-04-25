@@ -125,6 +125,7 @@ class Masking:
             encounter_speed=env.state.encounter_speed,
             robustness_margin=robustness_margin,
             monitoring_radius=env.state.monitoring_radius,
+            state=env.state,
         )
         env.state.fallback_used = is_fallback
         return mask
