@@ -13,9 +13,6 @@ class ColregsReward(Reward):
     Extends the base Reward class with reward terms ported from ColregsReward
     (E. Meyer et al., COLREG-Compliant Collision Avoidance for USV Using DRL).
 
-    Crossing-only: reverse-driving penalties are omitted because surge commands
-    are clipped non-negative.
-
     All parameters are read exclusively from the config dict — no values are
     inferred from the action space or environment configuration.
     """
@@ -26,6 +23,7 @@ class ColregsReward(Reward):
         extra_handlers = {
             "reward_fallback":          self._build_fallback,
             "reward_acceleration":      self._build_acceleration,
+            "reward_reverse_driving":   self._build_reverse_driving,
             "reward_termination":       self._build_termination,
             "reward_velocity":          self._build_velocity,
             "reward_goal_distance":     self._build_goal_distance,
@@ -60,7 +58,10 @@ class ColregsReward(Reward):
         self._prev_yaw_rate_cmd_deg_s = None
         self._prev_surge_accel_cmd = None
         self.reward_handlers["reward_acceleration"] = partial(
-            self._reward_acceleration, cfg["coefficient"]
+            self._reward_acceleration,
+            cfg.get("coefficient", 1.0),
+            cfg.get("yaw_rate_delta_coefficient", 1.0),
+            cfg.get("surge_accel_delta_coefficient", 1.0),
         )
         self.reward_reset_handlers["reward_acceleration"] = self._reset_acceleration
 
@@ -68,7 +69,17 @@ class ColregsReward(Reward):
         self._prev_yaw_rate_cmd_deg_s = None
         self._prev_surge_accel_cmd = None
 
-    def _reward_acceleration(self, coeff, state, in_radius):
+    def _reward_acceleration(
+        self,
+        coeff,
+        yaw_rate_delta_coeff,
+        surge_accel_delta_coeff,
+        state,
+        in_radius,
+    ):
+        # These are the held agent commands (r_i, a_j), not the autopilot
+        # torques. Penalise command changes separately so deg/s and m/s^2
+        # are not silently added with equal units.
         yaw_rate_cmd_deg_s = float(np.degrees(state._current_yaw_rate_cmd))
         surge_accel_cmd = float(state._current_surge_accel_cmd)
 
@@ -77,12 +88,29 @@ class ColregsReward(Reward):
             self._prev_surge_accel_cmd = surge_accel_cmd
             return 0.0
 
-        delta = abs(yaw_rate_cmd_deg_s - self._prev_yaw_rate_cmd_deg_s) + abs(
+        yaw_rate_delta = abs(yaw_rate_cmd_deg_s - self._prev_yaw_rate_cmd_deg_s)
+        surge_accel_delta = abs(
             surge_accel_cmd - self._prev_surge_accel_cmd
         )
         self._prev_yaw_rate_cmd_deg_s = yaw_rate_cmd_deg_s
         self._prev_surge_accel_cmd = surge_accel_cmd
-        return coeff * delta
+        return coeff * (
+            yaw_rate_delta_coeff * yaw_rate_delta
+            + surge_accel_delta_coeff * surge_accel_delta
+        )
+
+    # ------------------------------------------------------------------ #
+    # reward_reverse_driving                                              #
+    # ------------------------------------------------------------------ #
+
+    def _build_reverse_driving(self, cfg):
+        self.reward_handlers["reward_reverse_driving"] = partial(
+            self._reward_reverse_driving, cfg["coefficient"]
+        )
+
+    @staticmethod
+    def _reward_reverse_driving(coeff, state, in_radius):
+        return coeff if _surge_speed(state) < 0.0 else 0.0
 
     # ------------------------------------------------------------------ #
     # reward_termination                                                   #
@@ -117,14 +145,16 @@ class ColregsReward(Reward):
     def _build_velocity(self, cfg):
         self.reward_handlers["reward_velocity"] = partial(
             self._reward_velocity,
-            cfg["low_threshold"],
-            cfg["high_threshold"],
+            cfg["low_speed_mps"],
+            cfg["high_speed_mps"],
             cfg["coefficient"],
         )
 
     @staticmethod
     def _reward_velocity(low_thr, high_thr, coeff, state, in_radius):
-        v = state._current_surge_command_fraction
+        # Use realised surge speed u, matching the reference reward's v_ego
+        # term. The integrated command fraction is only a controller setpoint.
+        v = _surge_speed(state)
         if np.isnan(v):
             return 0.0
         penalty = 0.0
@@ -319,3 +349,9 @@ class ColregsReward(Reward):
             return p["port_dyn_plus_coeff"] if vy >= 0.0 else p["port_dyn_minus_coeff"]
         else:
             return p["stern_dyn_plus_coeff"] if vy >= 0.0 else p["stern_dyn_minus_coeff"]
+
+
+def _surge_speed(state) -> float:
+    if state.sim_state is None or "nu" not in state.sim_state:
+        return np.nan
+    return float(state.sim_state["nu"][0])

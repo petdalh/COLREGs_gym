@@ -64,7 +64,16 @@ environment_configuration:
 
     reward_acceleration:
       is_enabled: true
+      # Penalises changes in the agent's held commands (r_i, a_j), not
+      # controller torques. The accel weight normalises one accel grid step
+      # (0.003 m/s^2) to roughly one yaw-rate grid step (0.5 deg/s).
       coefficient: -0.05
+      yaw_rate_delta_coefficient: 1.0
+      surge_accel_delta_coefficient: 166.6667
+
+    reward_reverse_driving:
+      is_enabled: true
+      coefficient: -40.0
 
     reward_termination:
       is_enabled: true
@@ -75,9 +84,9 @@ environment_configuration:
 
     reward_velocity:
       is_enabled: true
-      # Applied to commanded surge fraction u_d / v_max.
-      low_threshold:   0.9
-      high_threshold:  1.0
+      # Applied to actual surge speed u = sim_state["nu"][0] in m/s.
+      low_speed_mps:   0.36
+      high_speed_mps:  0.40
       coefficient:     1.0
 
     reward_goal_distance:

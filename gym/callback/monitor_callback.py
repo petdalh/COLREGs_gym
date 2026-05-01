@@ -30,6 +30,7 @@ class ColregsMonitorCallback(BaseCallback):
 
         self._REWARD_KEYS = [
             "reward_acceleration",
+            "reward_reverse_driving",
             "reward_termination",
             "reward_velocity",
             "reward_goal_distance",
