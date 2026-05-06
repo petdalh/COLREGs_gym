@@ -24,6 +24,13 @@ def relative_polar(
     return float(d), float(beta)
 
 
+def bearing_to_goal(pos_xy: np.ndarray, goal_xy: np.ndarray) -> float:
+    """World-frame bearing from a position to a goal."""
+    x, y = np.asarray(pos_xy, dtype=float)
+    goal_x, goal_y = np.asarray(goal_xy, dtype=float)[:2]
+    return float(np.arctan2(goal_y - y, goal_x - x))
+
+
 def to_obstacle_frame(
     ego_pos: np.ndarray,
     ego_vel: np.ndarray,

@@ -1,5 +1,5 @@
 import numpy as np
-from gym.utils.geometry import propagate_vessel, wrap_angle
+from gym.utils.geometry import bearing_to_goal, propagate_vessel, wrap_angle
 
 
 class State:
@@ -182,7 +182,7 @@ class State:
         goal = np.asarray(goal[:2], dtype=float)
         delta = goal - eta[:2]
         range_sq = float(np.dot(delta, delta))
-        bearing = float(np.arctan2(delta[1], delta[0]))
+        bearing = bearing_to_goal(eta[:2], goal)
         if range_sq <= 1e-12:
             return bearing, 0.0
 

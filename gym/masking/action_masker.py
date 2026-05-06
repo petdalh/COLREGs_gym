@@ -5,7 +5,12 @@ import numpy as np
 from pacstl.common.interfaces import PACReachableSet, TimeStampedState
 
 from gym.utils.discrete_actions import decode_discrete_action
-from gym.utils.geometry import to_obstacle_frame, within_monitoring_radius, wrap_angle
+from gym.utils.geometry import (
+    bearing_to_goal,
+    to_obstacle_frame,
+    within_monitoring_radius,
+    wrap_angle,
+)
 from gym.utils.robustness import extract_robustness_upper, extract_robustness_lower
 
 
@@ -205,6 +210,10 @@ class ActionMasker:
             if state is not None and state._current_heading_cmd is not None
             else float(ego_state["eta"][-1])
         )
+        initial_psi_d_offset = self._initial_psi_d_offset(
+            ego_state,
+            initial_cmd_psi,
+        )
         initial_cmd_u = (
             float(state._current_surge_cmd)
             if state is not None and state._current_surge_cmd is not None
@@ -240,7 +249,7 @@ class ActionMasker:
                         "partial_tube": {},
                         "depth": 0,
                         "pending_action": first_action,
-                        "cmd_psi": initial_cmd_psi,
+                        "psi_d_offset": initial_psi_d_offset,
                         "cmd_u": initial_cmd_u,
                     }
                 ]
@@ -259,7 +268,7 @@ class ActionMasker:
                     continue
                 next_state, rollout = self._simulate_depth_step(
                     state=node["state"],
-                    cmd_psi=node["cmd_psi"],
+                    psi_d_offset=node["psi_d_offset"],
                     cmd_u=node["cmd_u"],
                     yaw_rate_cmd=yaw_rate_cmd,
                     surge_accel_cmd=surge_accel_cmd,
@@ -310,7 +319,9 @@ class ActionMasker:
                                 "partial_tube": partial_tube,
                                 "depth": next_depth,
                                 "pending_action": cont_action,
-                                "cmd_psi": float(next_state["eta"][-1]),
+                                "psi_d_offset": float(
+                                    next_state["psi_d_offset"]
+                                ),
                                 "cmd_u": float(next_state["nu"][0]),
                             }
                         )
@@ -375,7 +386,7 @@ class ActionMasker:
     def _simulate_depth_step(
         self,
         state,
-        cmd_psi,
+        psi_d_offset,
         cmd_u,
         yaw_rate_cmd,
         surge_accel_cmd,
@@ -391,7 +402,11 @@ class ActionMasker:
         """
         eta = state["eta"]
         px, py = eta[0], eta[1]
-        psi = float(cmd_psi)
+        goal = state.get("goal")
+        if goal is not None:
+            psi = self._goal_relative_heading(px, py, goal, psi_d_offset)
+        else:
+            psi = float(eta[-1])
         u = float(cmd_u)
 
         obs_n, obs_e, obs_psi = encounter_vessel_eta
@@ -406,7 +421,13 @@ class ActionMasker:
         while t < target_t - 1e-9:
             dt_step = min(self.sim_dt, target_t - t)
 
-            psi_next = psi + yaw_rate_cmd * dt_step
+            if goal is not None:
+                psi_start = self._goal_relative_heading(px, py, goal, psi_d_offset)
+                psi_d_offset += yaw_rate_cmd * dt_step
+            else:
+                psi_start = psi
+                psi_d_offset += yaw_rate_cmd * dt_step
+
             u_next = float(
                 np.clip(
                     u + surge_accel_cmd * dt_step,
@@ -414,8 +435,23 @@ class ActionMasker:
                     self.v_max,
                 )
             )
-            avg_psi = psi + 0.5 * yaw_rate_cmd * dt_step
             avg_u = 0.5 * (u + u_next)
+
+            if goal is not None:
+                # First-order predictor: estimate the end-of-step LOS from
+                # the start heading, then use the midpoint heading for motion.
+                pred_px = px + np.cos(psi_start) * avg_u * dt_step
+                pred_py = py + np.sin(psi_start) * avg_u * dt_step
+                psi_next = self._goal_relative_heading(
+                    pred_px,
+                    pred_py,
+                    goal,
+                    psi_d_offset,
+                )
+                avg_psi = psi_start + 0.5 * wrap_angle(psi_next - psi_start)
+            else:
+                psi_next = psi + yaw_rate_cmd * dt_step
+                avg_psi = psi + 0.5 * yaw_rate_cmd * dt_step
 
             px += np.cos(avg_psi) * avg_u * dt_step
             py += np.sin(avg_psi) * avg_u * dt_step
@@ -455,8 +491,19 @@ class ActionMasker:
             "eta": np.array([px, py, psi]),
             "nu": np.array([u, 0.0, 0.0]),
             "goal": state["goal"],
+            "psi_d_offset": psi_d_offset,
         }
         return next_state, rollout
+
+    def _initial_psi_d_offset(self, ego_state, initial_cmd_psi):
+        goal = ego_state.get("goal")
+        if goal is None:
+            return 0.0
+        goal_bearing = bearing_to_goal(ego_state["eta"][:2], goal)
+        return wrap_angle(initial_cmd_psi - goal_bearing)
+
+    def _goal_relative_heading(self, px, py, goal, psi_d_offset):
+        return bearing_to_goal(np.array([px, py]), goal) + float(psi_d_offset)
 
     def _min_surge_for_rollout(self):
         if not self.speed_floor_enabled:

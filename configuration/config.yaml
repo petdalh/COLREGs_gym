@@ -13,7 +13,7 @@ training_configuration:
   checkpoint_freq: 100000
   tensorboard_log: logs/colregs_ppo
   plot_dir: plots
-  plot_every_episodes: 50
+  plot_every_episodes: 1
   policy_net_arch: [128, 128]
   n_steps: 512
   batch_size: 64
@@ -33,7 +33,7 @@ environment_configuration:
     speed_floor_enabled: true
 
   action_configuration:
-    yaw_rate_commands_deg_s: [-0.8, -0.5, -0.25, 0, 0.25, 0.5, 0.8]
+    yaw_rate_commands_deg_s: [-1.0, -0.5, -0.25, 0, 0.25, 0.5, 1]
     surge_accel_commands: [-0.002, 0.0, 0.002]
 
   masking_configuration:
@@ -54,7 +54,7 @@ environment_configuration:
     maneuver_horizon: 10.0
 
   monitoring_configuration:
-    masking_enabled: false
+    masking_enabled: true
     monitoring_radius: 18.0
     monitoring_radius_safety_factor: 1.0
     robustness_margin: 14.0

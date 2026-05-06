@@ -1,11 +1,10 @@
 """Crossing-specific COLREGS reward — faithful port of ColregsReward."""
 from functools import partial
-import math
 
 import numpy as np
 
 from gym.reward.reward import Reward
-from gym.utils.geometry import wrap_angle, cross_track_error
+from gym.utils.geometry import bearing_to_goal, cross_track_error, wrap_angle
 
 
 class ColregsReward(Reward):
@@ -201,7 +200,7 @@ class ColregsReward(Reward):
         ego_psi = float(state.sim_state["eta"][2])
 
         eucl_dist = np.hypot(goal[0] - pos[0], goal[1] - pos[1])
-        goal_bearing = math.atan2(goal[1] - pos[1], goal[0] - pos[0])
+        goal_bearing = bearing_to_goal(pos, goal)
         orient_dist = abs(wrap_angle(ego_psi - goal_bearing))
 
         # Initialise on first call (mirrors ColregsReward.reset() behaviour)

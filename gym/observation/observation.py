@@ -1,5 +1,5 @@
 import numpy as np
-from gym.utils.geometry import relative_polar, wrap_angle
+from gym.utils.geometry import bearing_to_goal, relative_polar, wrap_angle
 
 
 class Observation:
@@ -24,7 +24,7 @@ class Observation:
         if goal is None:
             goal = state.sim_state.get("goal")
         goal_pos = np.asarray(goal[:2], dtype=float) if goal is not None else ego_pos
-        goal_bearing = float(np.arctan2(goal_pos[1] - ego_pos[1], goal_pos[0] - ego_pos[0]))
+        goal_bearing = bearing_to_goal(ego_pos, goal_pos)
 
         d_g, beta_g = relative_polar(ego_pos, psi, goal_pos)
         if self._prev_d_g is None:
