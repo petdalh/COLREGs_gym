@@ -35,6 +35,7 @@ class ColregsMonitorCallback(BaseCallback):
             "reward_velocity",
             "reward_goal_distance",
             "reward_lateral_deviation",
+            "reward_wrong_side_crossing",
             "reward_safe_distance",
         ]
         self._ep_reward_sums = {k: 0.0 for k in self._REWARD_KEYS}

@@ -9,10 +9,12 @@ class State:
         n_actions,
         ego_vessel_model,
         initial_surge_command_fraction=0.8,
+        min_surge_command_mps=0.0,
     ):
         self.monitoring_radius = monitoring_radius
         self.ego_vessel_model = ego_vessel_model
         self.initial_surge_command_fraction = float(initial_surge_command_fraction)
+        self.min_surge_command_mps = float(min_surge_command_mps)
 
         self.encounter_vessel_eta = None
         self._encounter_speed = None
@@ -149,7 +151,7 @@ class State:
             )
         else:
             self._current_heading_cmd = float(eta[-1])
-        self._current_surge_cmd = float(
+        self._current_surge_cmd = self._clip_surge_cmd(
             self.initial_surge_command_fraction * self.ego_vessel_model.v_max
         )
         self._current_surge_command_fraction = (
@@ -213,12 +215,8 @@ class State:
         )
 
         previous_surge_cmd = float(self._current_surge_cmd)
-        self._current_surge_cmd = float(
-            np.clip(
-                self._current_surge_cmd + surge_accel_cmd * dt,
-                0.0,
-                self.ego_vessel_model.v_max,
-            )
+        self._current_surge_cmd = self._clip_surge_cmd(
+            self._current_surge_cmd + surge_accel_cmd * dt
         )
         u_d_dot = (
             (self._current_surge_cmd - previous_surge_cmd) / dt
@@ -245,9 +243,11 @@ class State:
     def set_heading_speed_commands(self, psi_d: float, u_d: float):
         """Set commanded heading and speed directly (goal-bearing action space)."""
         self._current_heading_cmd = float(psi_d)
-        self._current_surge_cmd = float(u_d)
+        self._current_surge_cmd = self._clip_surge_cmd(u_d)
         self._current_surge_command_fraction = (
-            u_d / self.ego_vessel_model.v_max if self.ego_vessel_model.v_max else np.nan
+            self._current_surge_cmd / self.ego_vessel_model.v_max
+            if self.ego_vessel_model.v_max
+            else np.nan
         )
         self._current_yaw_rate_cmd = 0.0
         self._current_surge_accel_cmd = 0.0
@@ -256,9 +256,37 @@ class State:
         self._current_u_d_dot = 0.0
         self._current_goal_bearing_dot = 0.0
 
+    def hold_current_commands(self):
+        """Hold carried heading and surge references without integrating action rates."""
+        if self._current_heading_cmd is None or self._current_surge_cmd is None:
+            self.initialize_command_references(self.sim_state)
+
+        self._current_yaw_rate_cmd = 0.0
+        self._current_surge_accel_cmd = 0.0
+        self._current_psi_d_dot = 0.0
+        self._current_psi_d_ddot = 0.0
+        self._current_u_d_dot = 0.0
+        _, self._current_goal_bearing_dot = self._goal_bearing_and_rate()
+        return (
+            self._current_heading_cmd,
+            self._current_surge_cmd,
+            self._current_psi_d_dot,
+            self._current_psi_d_ddot,
+            self._current_u_d_dot,
+        )
+
     def set_current_rate_commands(self, yaw_rate_cmd: float, surge_accel_cmd: float):
         self._current_yaw_rate_cmd = float(yaw_rate_cmd)
         self._current_surge_accel_cmd = float(surge_accel_cmd)
+
+    def _clip_surge_cmd(self, u_d: float) -> float:
+        return float(
+            np.clip(
+                u_d,
+                self.min_surge_command_mps,
+                self.ego_vessel_model.v_max,
+            )
+        )
 
     def record(self):
         """Append current positions and control state to history."""

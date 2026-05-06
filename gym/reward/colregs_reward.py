@@ -28,6 +28,7 @@ class ColregsReward(Reward):
             "reward_velocity":          self._build_velocity,
             "reward_goal_distance":     self._build_goal_distance,
             "reward_lateral_deviation": self._build_lateral_deviation,
+            "reward_wrong_side_crossing": self._build_wrong_side_crossing,
             "reward_safe_distance":     self._build_safe_distance,
         }
         for key, builder in extra_handlers.items():
@@ -270,6 +271,53 @@ class ColregsReward(Reward):
         if c8 != 0:
             return float(np.clip(c4 * lat_dist, -c8, c8))
         return c4 * lat_dist
+
+    # ------------------------------------------------------------------ #
+    # reward_wrong_side_crossing                                          #
+    # ------------------------------------------------------------------ #
+
+    def _build_wrong_side_crossing(self, cfg):
+        self._wrong_side_crossing_triggered = False
+        self._prev_wrong_side_rel_n = None
+        self.reward_handlers["reward_wrong_side_crossing"] = partial(
+            self._reward_wrong_side_crossing,
+            cfg["coefficient"],
+            cfg.get("east_margin_m", 0.0),
+        )
+        self.reward_reset_handlers["reward_wrong_side_crossing"] = (
+            self._reset_wrong_side_crossing
+        )
+
+    def _reset_wrong_side_crossing(self):
+        self._wrong_side_crossing_triggered = False
+        self._prev_wrong_side_rel_n = None
+
+    def _reward_wrong_side_crossing(self, coeff, east_margin_m, state, in_radius):
+        if self._wrong_side_crossing_triggered:
+            return 0.0
+        if state.encounter_vessel_eta is None or state.sim_state is None:
+            return 0.0
+
+        ego_eta = state.sim_state["eta"]
+        ego_n = float(ego_eta[0])
+        ego_e = float(ego_eta[1])
+        enc_n = float(state.encounter_vessel_eta[0])
+        enc_e = float(state.encounter_vessel_eta[1])
+
+        rel_n = ego_n - enc_n
+        rel_e = ego_e - enc_e
+        prev_rel_n = self._prev_wrong_side_rel_n
+        self._prev_wrong_side_rel_n = rel_n
+
+        if prev_rel_n is None:
+            return 0.0
+
+        crossed_obstacle_north_line = prev_rel_n < 0.0 <= rel_n
+        passed_left_of_obstacle = rel_e < -float(east_margin_m)
+        if crossed_obstacle_north_line and passed_left_of_obstacle:
+            self._wrong_side_crossing_triggered = True
+            return coeff
+        return 0.0
 
     # ------------------------------------------------------------------ #
     # reward_safe_distance  (port of safe_distance_penalty)               #

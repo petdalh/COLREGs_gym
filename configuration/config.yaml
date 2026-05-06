@@ -1,6 +1,6 @@
 wandb_configuration:
   project: "colregs-ppo"      
-  run_name: test_actuator_tracking_surge              
+  run_name: backstepping_low_speed_cap
   group: null                   
   enabled: true
 
@@ -8,12 +8,12 @@ training_configuration:
   algorithm: PPO
   policy: MlpPolicy
   remove_existing_logging: true
-  training_timesteps: 10000
+  training_timesteps: 100000
   checkpoint_dir: checkpoints/ppo_mask
-  checkpoint_freq: 10000
+  checkpoint_freq: 100000
   tensorboard_log: logs/colregs_ppo
   plot_dir: plots
-  plot_every_episodes: 1
+  plot_every_episodes: 50
   policy_net_arch: [128, 128]
   n_steps: 512
   batch_size: 64
@@ -26,10 +26,15 @@ environment_configuration:
   decision_interval: 10
   sim_dt: 0.5
   initial_surge_command_fraction: 0.8
+  min_surge_command_mps: 0.1
+  pre_maneuver_duration_s: 50.0
+
+  action_constraints:
+    speed_floor_enabled: true
 
   action_configuration:
-    yaw_rate_commands_deg_s: [-1, -0.5, -0.25, 0, 0.25, 0.5, 1]
-    surge_accel_commands: [-0.003, 0.0, 0.003]
+    yaw_rate_commands_deg_s: [-0.8, -0.5, -0.25, 0, 0.25, 0.5, 0.8]
+    surge_accel_commands: [-0.002, 0.0, 0.002]
 
   masking_configuration:
     sim_dt: 0.5
@@ -41,11 +46,11 @@ environment_configuration:
     start_position: [1.5, 7.5, 0.0]
     wave_conditions: [0.05, 1.5, 0.0]
     encounter_type: crossing
-    separation: 18.0
+    separation: 24.0
     target_speed: 0.2
     goal_ahead_distance: 30.0
     collision_radius: 1.0
-    simtime: 250.0
+    simtime: 300.0
     maneuver_horizon: 10.0
 
   monitoring_configuration:
@@ -104,6 +109,11 @@ environment_configuration:
       coefficient:              -0.005   # c4
       clip:                      5.0    # c8 (0 = no clip)
       final_approach_start_dist: 5.0    # c1
+
+    reward_wrong_side_crossing:
+      is_enabled: true
+      coefficient: -75.0
+      east_margin_m: 0.0
 
     reward_safe_distance:
       is_enabled: true

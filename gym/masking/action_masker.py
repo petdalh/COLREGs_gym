@@ -43,6 +43,18 @@ class ActionMasker:
         )
         self.action_hold_dt = self.dt * self.decision_interval
         self.decision_depth = int(config.get("decision_depth", self.decision_depth))
+        self.min_surge_command_mps = float(
+            config.get(
+                "min_surge_command_mps",
+                getattr(self, "min_surge_command_mps", 0.0),
+            )
+        )
+        self.speed_floor_enabled = bool(
+            config.get(
+                "speed_floor_enabled",
+                self.min_surge_command_mps > 0.0,
+            )
+        )
         # Separate from the detection margin: threshold for certifying an action
         # as safe.  0.0 means "spec is satisfied", the spec's own physical
         # parameters (r_ego, t_h) already encode the safety margin.
@@ -198,6 +210,15 @@ class ActionMasker:
             if state is not None and state._current_surge_cmd is not None
             else float(ego_state["nu"][0])
         )
+        candidates = [
+            action_idx
+            for action_idx in candidates
+            if not self._violates_speed_floor(
+                initial_cmd_u,
+                self._decode_action(action_idx)[1],
+                self.action_hold_dt,
+            )
+        ]
 
         for first_action in candidates:
             best_rob = -np.inf  # track best (highest) lower bound seen
@@ -232,6 +253,10 @@ class ActionMasker:
                 yaw_rate_cmd, surge_accel_cmd = self._decode_action(
                     node["pending_action"]
                 )
+                if self._violates_speed_floor(
+                    node["cmd_u"], surge_accel_cmd, self.action_hold_dt
+                ):
+                    continue
                 next_state, rollout = self._simulate_depth_step(
                     state=node["state"],
                     cmd_psi=node["cmd_psi"],
@@ -382,7 +407,13 @@ class ActionMasker:
             dt_step = min(self.sim_dt, target_t - t)
 
             psi_next = psi + yaw_rate_cmd * dt_step
-            u_next = float(np.clip(u + surge_accel_cmd * dt_step, 0.0, self.v_max))
+            u_next = float(
+                np.clip(
+                    u + surge_accel_cmd * dt_step,
+                    self._min_surge_for_rollout(),
+                    self.v_max,
+                )
+            )
             avg_psi = psi + 0.5 * yaw_rate_cmd * dt_step
             avg_u = 0.5 * (u + u_next)
 
@@ -426,3 +457,18 @@ class ActionMasker:
             "goal": state["goal"],
         }
         return next_state, rollout
+
+    def _min_surge_for_rollout(self):
+        if not self.speed_floor_enabled:
+            return 0.0
+        return self.min_surge_command_mps
+
+    def _violates_speed_floor(self, cmd_u, surge_accel_cmd, dt):
+        if (
+            not self.speed_floor_enabled
+            or self.min_surge_command_mps <= 0.0
+            or surge_accel_cmd >= 0.0
+        ):
+            return False
+        next_cmd_u = float(cmd_u) + float(surge_accel_cmd) * float(dt)
+        return next_cmd_u < self.min_surge_command_mps

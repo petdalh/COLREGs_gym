@@ -41,6 +41,13 @@ class COLREGsGym(McGym):
         masking_cfg = dict(env_cfg.get("masking_configuration", {}))
         monitoring_cfg = env_cfg.get("monitoring_configuration", {})
         reward_cfg = env_cfg.get("reward_configuration", {})
+        action_constraints_cfg = env_cfg.get("action_constraints", {})
+        min_surge_command_mps = float(
+            env_cfg.get(
+                "min_surge_command_mps",
+                masking_cfg.get("min_surge_command_mps", 0.0),
+            )
+        )
 
         dt = dt if dt is not None else env_cfg.get("dt", 0.5)
         grid_width = grid_width if grid_width is not None else env_cfg.get("grid_width", 25.0)
@@ -59,6 +66,11 @@ class COLREGsGym(McGym):
         masking_cfg["sim_dt"] = sim_dt
         masking_cfg["dt"] = dt
         masking_cfg["decision_interval"] = decision_interval
+        masking_cfg["min_surge_command_mps"] = min_surge_command_mps
+        masking_cfg["speed_floor_enabled"] = action_constraints_cfg.get(
+            "speed_floor_enabled",
+            masking_cfg.get("speed_floor_enabled", min_surge_command_mps > 0.0),
+        )
         monitoring_radius = (
             monitoring_radius
             if monitoring_radius is not None
@@ -114,6 +126,7 @@ class COLREGsGym(McGym):
             initial_surge_command_fraction=env_cfg.get(
                 "initial_surge_command_fraction", 0.8
             ),
+            min_surge_command_mps=min_surge_command_mps,
         )
         self.observation = Observation(env_cfg.get("observation_configuration", config))
         self.robustness = Robustness(
@@ -128,6 +141,11 @@ class COLREGsGym(McGym):
         self.truncation = Truncation()
         self.callback = EpisodeLogger()
         self.decision_interval = decision_interval
+        self.pre_maneuver_duration_s = float(
+            env_cfg.get("pre_maneuver_duration_s", 0.0)
+        )
+        self._neutral_action_mask = self._build_neutral_action_mask()
+        self._step_count = 0
 
     def _sync_runtime_state(self):
         sim_state = self.get_state()
@@ -138,6 +156,19 @@ class COLREGsGym(McGym):
             sim_state,
         )
         return sim_state
+
+    def _build_neutral_action_mask(self):
+        mask = np.zeros(self.vessel_action.n_actions, dtype=bool)
+        yaw_idx = int(np.argmin(np.abs(self.vessel_action.yaw_rate_commands)))
+        accel_idx = int(np.argmin(np.abs(self.vessel_action.surge_accel_commands)))
+        action_idx = yaw_idx * len(self.vessel_action.surge_accel_commands) + accel_idx
+        mask[action_idx] = True
+        return mask
+
+    def _pre_maneuver_active(self):
+        if self.pre_maneuver_duration_s <= 0.0:
+            return False
+        return self._step_count * self.dt < self.pre_maneuver_duration_s
 
     def set_encounter(
         self,
@@ -169,13 +200,23 @@ class COLREGsGym(McGym):
         terminated = False
         truncated = False
         info = {}
-        yaw_rate_cmd, surge_accel_cmd = self.vessel_action.decode_discrete_actions(
-            int(action), self.state.sim_state
+        requested_yaw_rate_cmd, requested_surge_accel_cmd = (
+            self.vessel_action.decode_discrete_actions(int(action), self.state.sim_state)
         )
-        self.state.set_current_rate_commands(yaw_rate_cmd, surge_accel_cmd)
 
         last_tau = np.zeros(3)
+        pre_maneuver_was_active = False
         for _ in range(self.decision_interval):
+            pre_maneuver_active = self._pre_maneuver_active()
+            pre_maneuver_was_active = pre_maneuver_was_active or pre_maneuver_active
+            if pre_maneuver_active:
+                yaw_rate_cmd = 0.0
+                surge_accel_cmd = 0.0
+            else:
+                yaw_rate_cmd = requested_yaw_rate_cmd
+                surge_accel_cmd = requested_surge_accel_cmd
+            self.state.set_current_rate_commands(yaw_rate_cmd, surge_accel_cmd)
+
             self.state.propagate_encounter(self.dt)
             sim_state = self._sync_runtime_state()
 
@@ -184,9 +225,16 @@ class COLREGsGym(McGym):
                 info.update(term_info)
                 break
 
-            psi_d, u_d, psi_d_dot, psi_d_ddot, u_d_dot = self.state.apply_rate_command(
-                yaw_rate_cmd, surge_accel_cmd, self.dt
-            )
+            if pre_maneuver_active:
+                psi_d, u_d, psi_d_dot, psi_d_ddot, u_d_dot = (
+                    self.state.hold_current_commands()
+                )
+            else:
+                psi_d, u_d, psi_d_dot, psi_d_ddot, u_d_dot = (
+                    self.state.apply_rate_command(
+                        yaw_rate_cmd, surge_accel_cmd, self.dt
+                    )
+                )
             # if self._step_count % 20 == 0:
             #     tau, debug = self.vessel_action.compute(
             #         sim_state, self._controller, psi_d, u_d, True
@@ -239,7 +287,12 @@ class COLREGsGym(McGym):
         self.state.terminal_reason = None
         info.update(reward_info)
         info["encounter_active"] = bool(self.state._encounter_active)
-        info["mask_allowed_count"] = int(self.state._cached_mask.sum())
+        info["pre_maneuver_active"] = bool(pre_maneuver_was_active)
+        info["mask_allowed_count"] = int(
+            self._neutral_action_mask.sum()
+            if pre_maneuver_was_active
+            else self.state._cached_mask.sum()
+        )
         info["mask_fallback"] = bool(self.state.fallback_used)
 
         ctrl_sim = self.state.sim_state
@@ -269,6 +322,8 @@ class COLREGsGym(McGym):
         self.masking.update_encounter_state(self, robustness)
 
     def action_masks(self):
+        if self._pre_maneuver_active():
+            return self._neutral_action_mask.copy()
         return self.masking.action_masks(self)
 
     def configure_maneuver_monitoring(self, spec_factory):

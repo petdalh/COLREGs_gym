@@ -1,5 +1,6 @@
 import numpy as np
 
+from .action_constraints import ActionConstraints
 from .action_masker import ActionMasker
 from gym.utils.geometry import within_monitoring_radius
 
@@ -29,16 +30,22 @@ class Masking:
             ego_vessel_model=ego_vessel_model,
             config=self._default_action_masking_config,
         )
+        self._action_constraints = ActionConstraints(
+            action=action,
+            config=self._default_action_masking_config,
+        )
 
     def _default_mask(self):
         return np.ones(self.n_actions, dtype=bool)
 
     def configure_for_scenario(self, encounter_scenario):
         scenario_cfg = getattr(encounter_scenario, "masking_configuration", None)
+        config = scenario_cfg or self._default_action_masking_config
         self._action_masker.configure(
-            config=scenario_cfg or self._default_action_masking_config,
+            config=config,
             vessel_model=self._vessel_model,
         )
+        self._action_constraints.configure(config=config)
 
     def reset(self, env):
         self._steps_since_mask_update = 0
@@ -86,10 +93,11 @@ class Masking:
 
     def action_masks(self, env):
         env.state.fallback_used = False
+        constraint_mask = self._action_constraints.action_masks(env.state)
         if not self.enabled:
-            return self._default_mask()
+            return constraint_mask
         if not env.state._encounter_active or env.state._active_maneuver_spec is None:
-            return self._default_mask()
+            return constraint_mask
 
         in_radius = env.state.in_monitoring_radius
         if in_radius is None:
@@ -105,7 +113,7 @@ class Masking:
             env.state._active_maneuver_spec = None
             env.state._cached_mask = self._default_mask()
             self._action_masker.update_scenario(None, None, env.encounter_scenario)
-            return env.state._cached_mask
+            return constraint_mask
 
         self._steps_since_mask_update += 1
         if self._steps_since_mask_update >= self.mask_recompute_interval:
@@ -115,7 +123,7 @@ class Masking:
             )
             self._steps_since_mask_update = 0
 
-        return env.state._cached_mask
+        return env.state._cached_mask & constraint_mask
 
     def _compute_mask(self, env, robustness_margin):
         mask, is_fallback = self._action_masker.get_mask(
