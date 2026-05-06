@@ -26,6 +26,11 @@ class State:
         self._current_surge_cmd: float | None = None
         self._current_yaw_rate_cmd: float = 0.0
         self._current_surge_accel_cmd: float = 0.0
+        self._current_psi_d_dot: float = 0.0
+        self._current_psi_d_ddot: float = 0.0
+        self._current_u_d_dot: float = 0.0
+        self._current_goal_bearing_dot: float = 0.0
+        self._psi_d_offset: float = 0.0
         self.fallback_used: bool = False
 
         self.sim_state = None
@@ -128,7 +133,7 @@ class State:
             not np.all(np.isfinite(self.sim_state["eta"]))
             or not np.all(np.isfinite(self.sim_state["nu"]))
             or np.any(np.abs(self.sim_state["eta"][:2]) > 1e6)
-            or np.any(np.abs(self.sim_state["nu"]) > 1e6)
+            or np.any(np.abs(self.sim_state["nu"]) > 2)
         )
 
     def set_current_tau(self, tau: np.ndarray):
@@ -152,17 +157,62 @@ class State:
             if self.ego_vessel_model.v_max
             else np.nan
         )
+        _, goal_bearing_dot = self._goal_bearing_and_rate(sim_state)
         self._current_yaw_rate_cmd = 0.0
         self._current_surge_accel_cmd = 0.0
+        self._current_psi_d_dot = goal_bearing_dot
+        self._current_psi_d_ddot = 0.0
+        self._current_u_d_dot = 0.0
+        self._current_goal_bearing_dot = goal_bearing_dot
+        self._psi_d_offset = 0.0
+
+    def _goal_bearing_and_rate(self, sim_state=None):
+        sim_state = self.sim_state if sim_state is None else sim_state
+        eta = np.asarray(sim_state["eta"], dtype=float)
+        nu = np.asarray(sim_state["nu"][:3], dtype=float)
+        psi = float(eta[-1])
+        u, v, r = nu
+
+        goal = sim_state.get("goal")
+        if goal is None:
+            return psi, float(r)
+
+        goal = np.asarray(goal[:2], dtype=float)
+        delta = goal - eta[:2]
+        range_sq = float(np.dot(delta, delta))
+        bearing = float(np.arctan2(delta[1], delta[0]))
+        if range_sq <= 1e-12:
+            return bearing, 0.0
+
+        x_dot = float(u * np.cos(psi) - v * np.sin(psi))
+        y_dot = float(u * np.sin(psi) + v * np.cos(psi))
+        bearing_dot = float((delta[1] * x_dot - delta[0] * y_dot) / range_sq)
+        return bearing, bearing_dot
 
     def apply_rate_command(self, yaw_rate_cmd: float, surge_accel_cmd: float, dt: float):
-        """Integrate held rate commands into carried MRAC references."""
+        """Integrate goal-relative rate commands into carried MRAC references.
+
+        The yaw rate accumulates a heading offset from the current goal bearing,
+        so yaw_rate=0 always commands heading toward the goal (offset=0).
+        """
         if self._current_heading_cmd is None or self._current_surge_cmd is None:
             self.initialize_command_references(self.sim_state)
 
         self._current_yaw_rate_cmd = float(yaw_rate_cmd)
         self._current_surge_accel_cmd = float(surge_accel_cmd)
-        self._current_heading_cmd = float(self._current_heading_cmd + yaw_rate_cmd * dt)
+
+        self._psi_d_offset += yaw_rate_cmd * dt
+
+        goal_bearing, goal_bearing_dot = self._goal_bearing_and_rate()
+        self._current_heading_cmd = goal_bearing + self._psi_d_offset
+        psi_d_dot = goal_bearing_dot + float(yaw_rate_cmd)
+        psi_d_ddot = (
+            (goal_bearing_dot - self._current_goal_bearing_dot) / dt
+            if dt > 0.0
+            else 0.0
+        )
+
+        previous_surge_cmd = float(self._current_surge_cmd)
         self._current_surge_cmd = float(
             np.clip(
                 self._current_surge_cmd + surge_accel_cmd * dt,
@@ -170,12 +220,41 @@ class State:
                 self.ego_vessel_model.v_max,
             )
         )
+        u_d_dot = (
+            (self._current_surge_cmd - previous_surge_cmd) / dt
+            if dt > 0.0
+            else 0.0
+        )
         self._current_surge_command_fraction = (
             self._current_surge_cmd / self.ego_vessel_model.v_max
             if self.ego_vessel_model.v_max
             else np.nan
         )
-        return self._current_heading_cmd, self._current_surge_cmd
+        self._current_psi_d_dot = psi_d_dot
+        self._current_psi_d_ddot = psi_d_ddot
+        self._current_u_d_dot = u_d_dot
+        self._current_goal_bearing_dot = goal_bearing_dot
+        return (
+            self._current_heading_cmd,
+            self._current_surge_cmd,
+            self._current_psi_d_dot,
+            self._current_psi_d_ddot,
+            self._current_u_d_dot,
+        )
+
+    def set_heading_speed_commands(self, psi_d: float, u_d: float):
+        """Set commanded heading and speed directly (goal-bearing action space)."""
+        self._current_heading_cmd = float(psi_d)
+        self._current_surge_cmd = float(u_d)
+        self._current_surge_command_fraction = (
+            u_d / self.ego_vessel_model.v_max if self.ego_vessel_model.v_max else np.nan
+        )
+        self._current_yaw_rate_cmd = 0.0
+        self._current_surge_accel_cmd = 0.0
+        self._current_psi_d_dot = 0.0
+        self._current_psi_d_ddot = 0.0
+        self._current_u_d_dot = 0.0
+        self._current_goal_bearing_dot = 0.0
 
     def set_current_rate_commands(self, yaw_rate_cmd: float, surge_accel_cmd: float):
         self._current_yaw_rate_cmd = float(yaw_rate_cmd)
@@ -233,6 +312,11 @@ class State:
         self._current_surge_cmd = None
         self._current_yaw_rate_cmd = 0.0
         self._current_surge_accel_cmd = 0.0
+        self._current_psi_d_dot = 0.0
+        self._current_psi_d_ddot = 0.0
+        self._current_u_d_dot = 0.0
+        self._current_goal_bearing_dot = 0.0
+        self._psi_d_offset = 0.0
         self.fallback_used = False
         self.sim_state = None
         self.in_monitoring_radius = None

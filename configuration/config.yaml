@@ -8,9 +8,9 @@ training_configuration:
   algorithm: PPO
   policy: MlpPolicy
   remove_existing_logging: true
-  training_timesteps: 100000
+  training_timesteps: 10000
   checkpoint_dir: checkpoints/ppo_mask
-  checkpoint_freq: 100000
+  checkpoint_freq: 10000
   tensorboard_log: logs/colregs_ppo
   plot_dir: plots
   plot_every_episodes: 1
@@ -28,7 +28,7 @@ environment_configuration:
   initial_surge_command_fraction: 0.8
 
   action_configuration:
-    yaw_rate_commands_deg_s: [-0.5, 0, 0.5]
+    yaw_rate_commands_deg_s: [-1, -0.5, -0.25, 0, 0.25, 0.5, 1]
     surge_accel_commands: [-0.003, 0.0, 0.003]
 
   masking_configuration:
@@ -49,7 +49,7 @@ environment_configuration:
     maneuver_horizon: 10.0
 
   monitoring_configuration:
-    masking_enabled: true
+    masking_enabled: false
     monitoring_radius: 18.0
     monitoring_radius_safety_factor: 1.0
     robustness_margin: 14.0

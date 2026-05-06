@@ -182,8 +182,6 @@ class ActionMasker:
         mask = np.zeros(self.n_actions, dtype=bool)
         action_robustness = np.full(self.n_actions, np.inf)
         # Sort candidates so larger (more starboard) yaw rates come first.
-        # This makes the dynamic pruning threshold (below) kick in sooner when a
-        # safe action is found early, cutting BFS work for remaining candidates.
         candidates = sorted(
             self._candidate_actions(situation),
             key=lambda a: -self.yaw_rate_commands[a // len(self.surge_accel_commands)],
@@ -313,19 +311,13 @@ class ActionMasker:
 
             if candidate_rob:
                 max_rob = max(candidate_rob.values())
-                # Fallback: only allow starboard turns (positive yaw rate)
-                # within 0.1 of the best robustness.  This prevents the agent
-                # from choosing port or straight-ahead actions in a crossing
-                # situation where no certified safe action exists.
+                # Fallback: only allow starboard turns (positive offset / rate)
                 for idx, rob in candidate_rob.items():
                     yaw_idx = idx // len(self.surge_accel_commands)
                     if rob >= max_rob - 0.1 and self.yaw_rate_commands[yaw_idx] > 0:
                         mask[idx] = True
 
                 if not mask.any():
-                    # All starboard candidates fell outside the robustness band
-                    # (e.g. the best action was straight-ahead).  Open to all
-                    # starboard turns regardless of robustness ranking.
                     for idx in candidate_rob:
                         yaw_idx = idx // len(self.surge_accel_commands)
                         if self.yaw_rate_commands[yaw_idx] > 0:

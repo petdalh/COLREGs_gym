@@ -27,6 +27,30 @@ class Action:
             surge_accel_commands=self.surge_accel_commands,
         )
 
-    def compute(self, sim_state, controller, psi_d, u_d):
+    def compute(self, sim_state, controller, psi_d, u_d, debug):
         """Compute control torques for the current carried references."""
+        # if debug:
+        #     action, debug = controller.compute_action_minimal(sim_state, psi_d, u_d, True)
+        #     return action, debug
         return controller.compute_action_minimal(sim_state, psi_d, u_d)
+
+    def compute_backstepping(
+        self,
+        sim_state,
+        controller,
+        psi_d,
+        u_d,
+        psi_d_dot,
+        psi_d_ddot,
+        u_d_dot,
+        debug,
+    ):
+        return controller.compute_action(
+            state=sim_state,
+            psi_d=psi_d,
+            u_d=u_d,
+            psi_d_dot=psi_d_dot,
+            psi_d_ddot=psi_d_ddot,
+            u_d_dot=u_d_dot,
+            calculate_debug=debug,
+        )

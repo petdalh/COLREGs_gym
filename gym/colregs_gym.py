@@ -14,7 +14,6 @@ from gym.utils.geometry import within_monitoring_radius, wrap_angle
 from gymnasium import spaces
 
 from mchorcrux.numpy_core.gym.mc_gym_csad_numpy import McGym
-from mchorcrux.numpy_core.controllers.adaptive_seakeeping import MRACShipController
 
 import numpy as np
 
@@ -92,7 +91,7 @@ class COLREGsGym(McGym):
         self.vessel_action = Action(action_cfg, v_max=ego_vessel_model.v_max)
         self.action_space = spaces.Discrete(self.vessel_action.n_actions)
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(9,), dtype=np.float32
+            low=-np.inf, high=np.inf, shape=(11,), dtype=np.float32
         )
         self.spec = None
         self.maneuver_spec_factory = None
@@ -184,12 +183,30 @@ class COLREGsGym(McGym):
             if terminated:
                 info.update(term_info)
                 break
-            
-            psi_d, u_d = self.state.apply_rate_command(
+
+            psi_d, u_d, psi_d_dot, psi_d_ddot, u_d_dot = self.state.apply_rate_command(
                 yaw_rate_cmd, surge_accel_cmd, self.dt
             )
-            tau = self.vessel_action.compute(
-                sim_state, self._controller, psi_d, u_d
+            # if self._step_count % 20 == 0:
+            #     tau, debug = self.vessel_action.compute(
+            #         sim_state, self._controller, psi_d, u_d, True
+            #     )
+            #     print("------ debug -------")
+            #     print(debug)
+            # else:
+            #     tau = self.vessel_action.compute(
+            #         sim_state, self._controller, psi_d, u_d, False
+            #     )
+            # last_tau = tau
+            tau = self.vessel_action.compute_backstepping(
+                self.get_observed_state(),
+                self._controller,
+                psi_d,
+                u_d,
+                psi_d_dot,
+                psi_d_ddot,
+                u_d_dot,
+                False,
             )
             last_tau = tau
             self.state.set_current_tau(tau)
@@ -315,7 +332,7 @@ class COLREGsGym(McGym):
 
         self._sync_runtime_state()
         self._step_count = 0
-        self._controller = MRACShipController(dt=self.dt)
+        self._controller.reset()
         self._episode_reward = 0.0
         self.state.initialize_command_references(self.state.sim_state)
         self.state.record()

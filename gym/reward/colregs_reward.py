@@ -210,7 +210,8 @@ class ColregsReward(Reward):
             return 0.0
 
         eucl_advance = self._prev_eucl_dist - eucl_dist
-        orient_advance = abs(self._prev_orient_dist - orient_dist)
+        orient_advance_signed = self._prev_orient_dist - orient_dist  # positive = rotating toward goal
+        orient_advance = abs(orient_advance_signed)
         self._prev_eucl_dist = eucl_dist
         self._prev_orient_dist = orient_dist
 
@@ -230,7 +231,7 @@ class ColregsReward(Reward):
         elif eucl_dist < c1:
             rew = c6 * (orient_advance * c3 + eucl_advance * c2)
         else:
-            rew = eucl_advance * c2
+            rew = c2 * eucl_advance + c3 * orient_advance_signed
 
         # Final-approach euclidean distance penalty (disabled when c5 >= 0)
         if c5 < 0 and eucl_dist < c1:
