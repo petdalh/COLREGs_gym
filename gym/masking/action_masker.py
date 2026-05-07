@@ -28,6 +28,9 @@ class ActionMasker:
         self.decision_interval = 1
         self.action_hold_dt = self.dt * self.decision_interval
         self.decision_depth = 5
+        self._shoebox = None
+        self._use_3dof = False
+        self._shoebox_sub_dt = 0.1
         self.configure(config=config, vessel_model=vessel_model)
 
         self.spec = None
@@ -67,6 +70,10 @@ class ActionMasker:
         # Heuristic pruning: skip expanding a node's children when its upper
         # robustness bound is below this threshold (default -inf = no pruning).
         self.pruning_threshold = float(config.get("pruning_threshold", -np.inf))
+        self._use_3dof = bool(config.get("use_3dof_dynamics", False))
+        self._shoebox_sub_dt = float(config.get("shoebox_sub_dt", getattr(self, "_shoebox_sub_dt", 0.1)))
+        if self._use_3dof:
+            self._init_shoebox(config)
 
     def _aligned_tube_steps(self):
         aligned_steps = []
@@ -383,6 +390,45 @@ class ActionMasker:
             candidates.append(action_idx)
         return candidates
 
+    def _init_shoebox(self, config):
+        try:
+            from shoeboxpy.model3dof import Shoebox
+        except ImportError:
+            raise RuntimeError(
+                "shoeboxpy is not installed; set use_3dof_dynamics: false in config"
+            )
+        self._shoebox = Shoebox(
+            L=float(config.get("shoebox_L", 2.578)),
+            B=float(config.get("shoebox_B", 0.444)),
+            T=float(config.get("shoebox_T", 0.133)),
+            rho=float(config.get("shoebox_rho", 1025.0)),
+            alpha_u=float(config.get("shoebox_alpha_u", 0.11009)),
+            alpha_v=float(config.get("shoebox_alpha_v", 0.86267)),
+            alpha_r=float(config.get("shoebox_alpha_r", 0.58680)),
+            beta_u=float(config.get("shoebox_beta_u", 0.30137)),
+            beta_v=float(config.get("shoebox_beta_v", 2.36154)),
+            beta_r=float(config.get("shoebox_beta_r", 2.84762)),
+        )
+
+    def _force_from_action(self, nu, surge_accel_cmd, r_cmd, sub_dt):
+        """Inverse dynamics: forces/moments to track commanded surge accel and yaw rate.
+
+        Cancels Coriolis and damping; uses a deadbeat law for yaw rate so that
+        r converges to r_cmd within one sub-step.
+        """
+        u, v, r = nu
+        sb = self._shoebox
+        cnu0 = -(sb.m + sb.MA[1, 1]) * v * r
+        cnu1 =  (sb.m + sb.MA[0, 0]) * u * r
+        Dnu0 = sb.D[0, 0] * u
+        Dnu1 = sb.D[1, 1] * v
+        Dnu2 = sb.D[2, 2] * r
+        r_dot_des = (r_cmd - r) / sub_dt
+        tau_X = sb.M_eff[0, 0] * surge_accel_cmd + Dnu0 + cnu0
+        tau_Y = sb.M_eff[1, 1] * 0.0 + Dnu1 + cnu1
+        tau_N = sb.M_eff[2, 2] * r_dot_des + Dnu2
+        return np.array([tau_X, tau_Y, tau_N])
+
     def _simulate_depth_step(
         self,
         state,
@@ -418,49 +464,88 @@ class ActionMasker:
         target_t = float(search_steps[depth_idx])
         t = start_t
 
-        while t < target_t - 1e-9:
-            dt_step = min(self.sim_dt, target_t - t)
+        if self._use_3dof and self._shoebox is not None:
+            # 3DOF shoebox branch: full hydrodynamic forward simulation.
+            nu_state = state.get("nu", np.zeros(3))
+            sb = self._shoebox
+            sb.eta[0], sb.eta[1], sb.eta[2] = px, py, psi
+            sb.nu[0] = float(cmd_u)
+            sb.nu[1] = float(nu_state[1]) if len(nu_state) > 1 else 0.0
+            sb.nu[2] = float(nu_state[2]) if len(nu_state) > 2 else 0.0
 
-            if goal is not None:
-                psi_start = self._goal_relative_heading(px, py, goal, psi_d_offset)
+            while t < target_t - 1e-9:
+                dt_step = min(self.sim_dt, target_t - t)
                 psi_d_offset += yaw_rate_cmd * dt_step
-            else:
-                psi_start = psi
-                psi_d_offset += yaw_rate_cmd * dt_step
-
-            u_next = float(
-                np.clip(
-                    u + surge_accel_cmd * dt_step,
-                    self._min_surge_for_rollout(),
-                    self.v_max,
+                u_now = sb.nu[0]
+                u_next_clamped = float(
+                    np.clip(
+                        u_now + surge_accel_cmd * dt_step,
+                        self._min_surge_for_rollout(),
+                        self.v_max,
+                    )
                 )
-            )
-            avg_u = 0.5 * (u + u_next)
+                u_dot_eff = (u_next_clamped - u_now) / dt_step if dt_step > 0 else 0.0
+                n_sub = max(1, round(dt_step / self._shoebox_sub_dt))
+                sub_dt_inner = dt_step / n_sub
+                for _ in range(n_sub):
+                    tau = self._force_from_action(sb.nu, u_dot_eff, yaw_rate_cmd, sub_dt_inner)
+                    sb.step(tau=tau, dt=sub_dt_inner)
+                    sb.nu[0] = float(
+                        np.clip(sb.nu[0], self._min_surge_for_rollout(), self.v_max)
+                    )
+                t += dt_step
 
-            if goal is not None:
-                # First-order predictor: estimate the end-of-step LOS from
-                # the start heading, then use the midpoint heading for motion.
-                pred_px = px + np.cos(psi_start) * avg_u * dt_step
-                pred_py = py + np.sin(psi_start) * avg_u * dt_step
-                psi_next = self._goal_relative_heading(
-                    pred_px,
-                    pred_py,
-                    goal,
-                    psi_d_offset,
+            px, py, psi = float(sb.eta[0]), float(sb.eta[1]), float(sb.eta[2])
+            u, v, r = float(sb.nu[0]), float(sb.nu[1]), float(sb.nu[2])
+            vn = np.cos(psi) * u - np.sin(psi) * v
+            ve = np.sin(psi) * u + np.cos(psi) * v
+            nu_out = np.array([u, v, r])
+        else:
+            # Kinematic branch (original implementation).
+            while t < target_t - 1e-9:
+                dt_step = min(self.sim_dt, target_t - t)
+
+                if goal is not None:
+                    psi_start = self._goal_relative_heading(px, py, goal, psi_d_offset)
+                    psi_d_offset += yaw_rate_cmd * dt_step
+                else:
+                    psi_start = psi
+                    psi_d_offset += yaw_rate_cmd * dt_step
+
+                u_next = float(
+                    np.clip(
+                        u + surge_accel_cmd * dt_step,
+                        self._min_surge_for_rollout(),
+                        self.v_max,
+                    )
                 )
-                avg_psi = psi_start + 0.5 * wrap_angle(psi_next - psi_start)
-            else:
-                psi_next = psi + yaw_rate_cmd * dt_step
-                avg_psi = psi + 0.5 * yaw_rate_cmd * dt_step
+                avg_u = 0.5 * (u + u_next)
 
-            px += np.cos(avg_psi) * avg_u * dt_step
-            py += np.sin(avg_psi) * avg_u * dt_step
-            psi = psi_next
-            u = u_next
-            t += dt_step
+                if goal is not None:
+                    # First-order predictor: estimate the end-of-step LOS from
+                    # the start heading, then use the midpoint heading for motion.
+                    pred_px = px + np.cos(psi_start) * avg_u * dt_step
+                    pred_py = py + np.sin(psi_start) * avg_u * dt_step
+                    psi_next = self._goal_relative_heading(
+                        pred_px,
+                        pred_py,
+                        goal,
+                        psi_d_offset,
+                    )
+                    avg_psi = psi_start + 0.5 * wrap_angle(psi_next - psi_start)
+                else:
+                    psi_next = psi + yaw_rate_cmd * dt_step
+                    avg_psi = psi + 0.5 * yaw_rate_cmd * dt_step
 
-        vn = u * np.cos(psi)
-        ve = u * np.sin(psi)
+                px += np.cos(avg_psi) * avg_u * dt_step
+                py += np.sin(avg_psi) * avg_u * dt_step
+                psi = psi_next
+                u = u_next
+                t += dt_step
+
+            vn = u * np.cos(psi)
+            ve = u * np.sin(psi)
+            nu_out = np.array([u, 0.0, 0.0])
 
         pred_obs_n = obs_n + obs_vn * target_t
         pred_obs_e = obs_e + obs_ve * target_t
@@ -489,7 +574,7 @@ class ActionMasker:
         }
         next_state = {
             "eta": np.array([px, py, psi]),
-            "nu": np.array([u, 0.0, 0.0]),
+            "nu": nu_out,
             "goal": state["goal"],
             "psi_d_offset": psi_d_offset,
         }

@@ -20,6 +20,7 @@ training_configuration:
   learning_rate: 3.0e-4
 
 environment_configuration:
+  controller_type: backstepping   # backstepping | mrac
   dt: 0.5
   grid_width: 25.0
   grid_height: 30.0
@@ -27,20 +28,35 @@ environment_configuration:
   sim_dt: 0.5
   initial_surge_command_fraction: 0.8
   min_surge_command_mps: 0.1
-  pre_maneuver_duration_s: 50.0
+  pre_maneuver_duration_s: 10.0
 
   action_constraints:
     speed_floor_enabled: true
 
   action_configuration:
-    yaw_rate_commands_deg_s: [-1.0, -0.5, -0.25, 0, 0.25, 0.5, 1]
-    surge_accel_commands: [-0.002, 0.0, 0.002]
+    yaw_rate_commands_deg_s: [-0.8, -0.5, -0.25, 0, 0.25, 0.5, 0.8]
+    surge_accel_commands: [-0.001, 0.0, 0.001]
 
   masking_configuration:
     sim_dt: 0.5
-    decision_depth: 2
-    certification_margin: 2.0
+    decision_depth: 3
+    certification_margin: 3.0
     pruning_threshold: -2.0
+    use_3dof_dynamics: true      # set true to enable shoeboxpy 3DOF integration
+    shoebox_sub_dt: 0.1           # RK4 substep within each sim_dt chunk (s)
+    # CSAD parameters (from McHorcrux csad.json, freq index 41).
+    # alpha/beta are back-calculated so shoebox's MA and D match CSAD derivatives:
+    #   m_sb = rho*L*B*T = 156.04 kg,  Izz_sb = 89.00 kg·m²
+    shoebox_L: 2.578
+    shoebox_B: 0.444
+    shoebox_T: 0.133
+    shoebox_rho: 1025.0
+    shoebox_alpha_u: 0.11009      # Xu_dot / m_sb  = 17.178  / 156.04
+    shoebox_alpha_v: 0.86267      # Yv_dot / m_sb  = 134.610 / 156.04
+    shoebox_alpha_r: 0.58680      # Nr_dot / Izz_sb = 52.225 / 89.00
+    shoebox_beta_u: 0.30137       # Xu     / m_sb  = 47.025  / 156.04
+    shoebox_beta_v: 2.36154       # Yv     / m_sb  = 368.497 / 156.04
+    shoebox_beta_r: 2.84762       # Nr     / Izz_sb = 253.439 / 89.00
 
   encounter_configuration:
     start_position: [1.5, 7.5, 0.0]
@@ -48,14 +64,14 @@ environment_configuration:
     encounter_type: crossing
     separation: 24.0
     target_speed: 0.2
-    goal_ahead_distance: 30.0
-    collision_radius: 1.0
+    goal_ahead_distance: 35.0
+    collision_radius: 2.0
     simtime: 300.0
     maneuver_horizon: 10.0
 
   monitoring_configuration:
     masking_enabled: true
-    monitoring_radius: 18.0
+    monitoring_radius: 50.0
     monitoring_radius_safety_factor: 1.0
     robustness_margin: 14.0
     robustness_sampling_rate: 1

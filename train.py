@@ -38,7 +38,7 @@ def configure_monitoring(env, monitoring_cfg):
     
     ego_vessel = EGO_VESSEL_DEFAULT
     env.maneuver_spec_factory = lambda T_end, T_start=None, _ev=ego_vessel: create_spec(
-        "colregs", "occupancy_clear", T_end=T_end,
+        "colregs", "maneuver_verified", T_end=T_end,
         **({"T_start": T_start} if T_start is not None else {}),
         ego_vessel=_ev,
     )

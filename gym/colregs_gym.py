@@ -87,9 +87,16 @@ class COLREGsGym(McGym):
             else monitoring_cfg.get("robustness_margin", 1.0)
         )
 
+        controller_type = env_cfg.get("controller_type", "backstepping")
+
         super().__init__(
             dt=dt, grid_width=grid_width, grid_height=grid_height, **kwargs
         )
+
+        self._controller_type = controller_type
+        if controller_type == "mrac":
+            from mchorcrux.numpy_core.controllers.adaptive_seakeeping import MRACShipController
+            self._controller = MRACShipController(dt=dt)
 
         self.vessel_model = vessel_model
         self.ego_vessel_model = ego_vessel_model
@@ -246,16 +253,21 @@ class COLREGsGym(McGym):
             #         sim_state, self._controller, psi_d, u_d, False
             #     )
             # last_tau = tau
-            tau = self.vessel_action.compute_backstepping(
-                self.get_observed_state(),
-                self._controller,
-                psi_d,
-                u_d,
-                psi_d_dot,
-                psi_d_ddot,
-                u_d_dot,
-                False,
-            )
+            if self._controller_type == "mrac":
+                tau = self.vessel_action.compute(
+                    self.get_observed_state(), self._controller, psi_d, u_d, False
+                )
+            else:
+                tau = self.vessel_action.compute_backstepping(
+                    self.get_observed_state(),
+                    self._controller,
+                    psi_d,
+                    u_d,
+                    psi_d_dot,
+                    psi_d_ddot,
+                    u_d_dot,
+                    False,
+                )
             last_tau = tau
             self.state.set_current_tau(tau)
             _, _, terminated, truncated, info = super().step(tau)
@@ -387,7 +399,8 @@ class COLREGsGym(McGym):
 
         self._sync_runtime_state()
         self._step_count = 0
-        self._controller.reset()
+        if hasattr(self._controller, "reset"):
+            self._controller.reset()
         self._episode_reward = 0.0
         self.state.initialize_command_references(self.state.sim_state)
         self.state.record()
