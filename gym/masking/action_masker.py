@@ -226,7 +226,7 @@ class ActionMasker:
             if state is not None and state._current_surge_cmd is not None
             else float(ego_state["nu"][0])
         )
-        candidates = [
+        first_action_candidates = [
             action_idx
             for action_idx in candidates
             if not self._violates_speed_floor(
@@ -234,9 +234,15 @@ class ActionMasker:
                 self._decode_action(action_idx)[1],
                 self.action_hold_dt,
             )
+            and self._respects_crossing_side(
+                situation,
+                initial_psi_d_offset,
+                self._decode_action(action_idx)[0],
+                self.action_hold_dt,
+            )
         ]
 
-        for first_action in candidates:
+        for first_action in first_action_candidates:
             best_rob = -np.inf  # track best (highest) lower bound seen
             found_safe = False
             cont_candidates = candidates
@@ -269,6 +275,13 @@ class ActionMasker:
                 yaw_rate_cmd, surge_accel_cmd = self._decode_action(
                     node["pending_action"]
                 )
+                if not self._respects_crossing_side(
+                    situation,
+                    node["psi_d_offset"],
+                    yaw_rate_cmd,
+                    self.action_hold_dt,
+                ):
+                    continue
                 if self._violates_speed_floor(
                     node["cmd_u"], surge_accel_cmd, self.action_hold_dt
                 ):
@@ -341,29 +354,42 @@ class ActionMasker:
 
         print(
             f"[ActionMask] search took {time.perf_counter() - _t0:.4f}s "
-            f"({mask.sum()}/{len(candidates)} actions safe)"
+            f"({mask.sum()}/{len(first_action_candidates)} actions safe)"
         )
 
         if not mask.any():
             is_fallback = True
             candidate_rob = {
                 idx: action_robustness[idx]
-                for idx in candidates
+                for idx in first_action_candidates
                 if np.isfinite(action_robustness[idx])
             }
 
             if candidate_rob:
                 max_rob = max(candidate_rob.values())
-                # Fallback: only allow starboard turns (positive offset / rate)
+                # Fallback: only allow commands that keep the commanded heading
+                # on the starboard side of the goal bearing. With rate actions,
+                # negative yaw can be a valid recovery action after a starboard
+                # maneuver because it unwinds a positive carried offset.
                 for idx, rob in candidate_rob.items():
-                    yaw_idx = idx // len(self.surge_accel_commands)
-                    if rob >= max_rob - 0.1 and self.yaw_rate_commands[yaw_idx] > 0:
+                    yaw_rate_cmd, _ = self._decode_action(idx)
+                    if rob >= max_rob - 0.1 and self._respects_crossing_side(
+                        situation,
+                        initial_psi_d_offset,
+                        yaw_rate_cmd,
+                        self.action_hold_dt,
+                    ):
                         mask[idx] = True
 
                 if not mask.any():
                     for idx in candidate_rob:
-                        yaw_idx = idx // len(self.surge_accel_commands)
-                        if self.yaw_rate_commands[yaw_idx] > 0:
+                        yaw_rate_cmd, _ = self._decode_action(idx)
+                        if self._respects_crossing_side(
+                            situation,
+                            initial_psi_d_offset,
+                            yaw_rate_cmd,
+                            self.action_hold_dt,
+                        ):
                             mask[idx] = True
 
                 print(
@@ -373,22 +399,34 @@ class ActionMasker:
                     f"(best robustness={max_rob:.2f})"
                 )
             else:
-                for action_idx in candidates:
-                    yaw_idx = action_idx // len(self.surge_accel_commands)
-                    if self.yaw_rate_commands[yaw_idx] > 0:
+                for action_idx in first_action_candidates:
+                    yaw_rate_cmd, _ = self._decode_action(action_idx)
+                    if self._respects_crossing_side(
+                        situation,
+                        initial_psi_d_offset,
+                        yaw_rate_cmd,
+                        self.action_hold_dt,
+                    ):
                         mask[action_idx] = True
-                print("[ActionMask] Emergency fallback: starboard turns only")
+                print("[ActionMask] Emergency fallback: non-port commands only")
         
         return mask, is_fallback
 
     def _candidate_actions(self, situation):
-        candidates = []
-        for action_idx in range(self.n_actions):
-            yaw_idx = action_idx // len(self.surge_accel_commands)
-            if situation == "crossing" and self.yaw_rate_commands[yaw_idx] < 0:
-                continue
-            candidates.append(action_idx)
-        return candidates
+        return list(range(self.n_actions))
+
+    @staticmethod
+    def _respects_crossing_side(
+        situation,
+        psi_d_offset,
+        yaw_rate_cmd,
+        dt,
+        tolerance=1e-9,
+    ):
+        if situation != "crossing":
+            return True
+        next_offset = float(psi_d_offset) + float(yaw_rate_cmd) * float(dt)
+        return next_offset >= -float(tolerance)
 
     def _init_shoebox(self, config):
         try:

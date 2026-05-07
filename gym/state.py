@@ -142,7 +142,7 @@ class State:
         self._current_tau = np.asarray(tau, dtype=float)
 
     def initialize_command_references(self, sim_state):
-        """Reset carried MRAC references at the start of an episode."""
+        """Reset carried controller references at the start of an episode."""
         eta = sim_state["eta"]
         goal = sim_state.get("goal")
         if goal is not None:
@@ -192,7 +192,7 @@ class State:
         return bearing, bearing_dot
 
     def apply_rate_command(self, yaw_rate_cmd: float, surge_accel_cmd: float, dt: float):
-        """Integrate goal-relative rate commands into carried MRAC references.
+        """Integrate goal-relative rate commands into carried controller references.
 
         The yaw rate accumulates a heading offset from the current goal bearing,
         so yaw_rate=0 always commands heading toward the goal (offset=0).

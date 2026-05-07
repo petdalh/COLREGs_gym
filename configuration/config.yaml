@@ -13,20 +13,20 @@ training_configuration:
   checkpoint_freq: 100000
   tensorboard_log: logs/colregs_ppo
   plot_dir: plots
-  plot_every_episodes: 1
+  plot_every_episodes: 10
   policy_net_arch: [128, 128]
   n_steps: 512
   batch_size: 64
   learning_rate: 3.0e-4
 
 environment_configuration:
-  controller_type: backstepping   # backstepping | mrac
+  controller_type: mrac   # backstepping | mrac
   dt: 0.5
   grid_width: 25.0
-  grid_height: 30.0
+  grid_height: 62.0
   decision_interval: 10
   sim_dt: 0.5
-  initial_surge_command_fraction: 0.8
+  initial_surge_command_fraction: 0.7
   min_surge_command_mps: 0.1
   pre_maneuver_duration_s: 10.0
 
@@ -34,8 +34,8 @@ environment_configuration:
     speed_floor_enabled: true
 
   action_configuration:
-    yaw_rate_commands_deg_s: [-0.8, -0.5, -0.25, 0, 0.25, 0.5, 0.8]
-    surge_accel_commands: [-0.001, 0.0, 0.001]
+    yaw_rate_commands_deg_s: [-1.0, -0.5, -0.25, 0, 0.25, 0.5, 1.0]
+    surge_accel_commands: [0.0]
 
   masking_configuration:
     sim_dt: 0.5
@@ -62,18 +62,18 @@ environment_configuration:
     start_position: [1.5, 7.5, 0.0]
     wave_conditions: [0.05, 1.5, 0.0]
     encounter_type: crossing
-    separation: 24.0
+    separation: 40.0
     target_speed: 0.2
-    goal_ahead_distance: 35.0
+    goal_ahead_distance: 60.0
     collision_radius: 2.0
-    simtime: 300.0
+    simtime: 500.0
     maneuver_horizon: 10.0
 
   monitoring_configuration:
     masking_enabled: true
-    monitoring_radius: 50.0
-    monitoring_radius_safety_factor: 1.0
-    robustness_margin: 14.0
+    monitoring_radius: 40.0
+    monitoring_radius_safety_factor: 4.0
+    robustness_margin: 40.0
     robustness_sampling_rate: 1
     mask_recompute_interval: 1
 
