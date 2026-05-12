@@ -5,7 +5,8 @@ class Termination:
     def is_terminated(self, state, boat_pos=None):
         if boat_pos is None:
             if state.is_diverged():
-                return True, {"reason": "diverged"}
+                self._log_state_blowup(state)
+                return True, {"reason": "state_blowup"}
             return False, {}
 
         env = state
@@ -36,3 +37,21 @@ class Termination:
                 return True, {"reason": "collision"}
 
         return False, {}
+
+    @staticmethod
+    def _log_state_blowup(state):
+        sim_state = getattr(state, "sim_state", None) or {}
+        eta = np.asarray(sim_state.get("eta", []), dtype=float)
+        nu = np.asarray(sim_state.get("nu", []), dtype=float)
+        tau = np.asarray(getattr(state, "_current_tau", []), dtype=float)
+        print(
+            "[Termination] State blowup: "
+            f"eta={np.array2string(eta, precision=4, suppress_small=True)}, "
+            f"nu={np.array2string(nu, precision=4, suppress_small=True)}, "
+            f"psi_d={getattr(state, '_current_heading_cmd', None)}, "
+            f"u_d={getattr(state, '_current_surge_cmd', None)}, "
+            f"psi_d_dot={getattr(state, '_current_psi_d_dot', None)}, "
+            f"psi_d_ddot={getattr(state, '_current_psi_d_ddot', None)}, "
+            f"u_d_dot={getattr(state, '_current_u_d_dot', None)}, "
+            f"tau={np.array2string(tau, precision=4, suppress_small=True)}"
+        )

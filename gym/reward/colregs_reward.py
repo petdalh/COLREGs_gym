@@ -134,7 +134,7 @@ class ColregsReward(Reward):
             return r_collision
         if reason == "time_limit":
             return r_timeout
-        if reason in ("out_of_bounds", "diverged"):
+        if reason in ("out_of_bounds", "diverged", "state_blowup"):
             return r_oob
         return 0.0
 
