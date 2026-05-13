@@ -11,3 +11,4 @@ wandb/
 tea_debug.log
 /reachable_sets/reachable_sets_old/
 /reachable_sets/reachable_sets_old2/
+top_level_tests/
