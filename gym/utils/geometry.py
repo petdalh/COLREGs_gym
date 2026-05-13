@@ -33,24 +33,32 @@ def bearing_to_goal(pos_xy: np.ndarray, goal_xy: np.ndarray) -> float:
 
 def to_obstacle_frame(
     ego_pos: np.ndarray,
+    ego_psi: float,
     ego_vel: np.ndarray,
     obs_pos: np.ndarray,
     obs_psi: float,
-    obs_vel: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Transform ego state to the obstacle-relative body frame."""
-    rel_pos = np.asarray(ego_pos, dtype=float) - np.asarray(obs_pos, dtype=float)
-    rel_vel = np.asarray(ego_vel, dtype=float) - np.asarray(obs_vel, dtype=float)
+) -> tuple[np.ndarray, float, np.ndarray]:
+    """Express ego pose/velocity in the obstacle's body frame.
 
-    angle = obs_psi + np.pi
+    Velocity is rotated only — the pacSTL predicates compute relative
+    velocity internally by offsetting the obstacle's velocity ellipsoid
+    with the ego's own velocity.
+    """
+    ego_pos = np.asarray(ego_pos, dtype=float)
+    ego_vel = np.asarray(ego_vel, dtype=float)
+    obs_pos = np.asarray(obs_pos, dtype=float)
+
+    angle = -obs_psi
     transform = np.array(
         [[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]],
         dtype=float,
     )
 
-    local_pos = transform @ rel_pos
-    local_vel = transform @ rel_vel
-    return local_pos, local_vel
+    local_pos = transform @ (ego_pos - obs_pos)
+    local_vel = transform @ ego_vel
+    local_psi = wrap_angle(ego_psi - obs_psi)
+
+    return local_pos, local_psi, local_vel
 
 
 def cross_track_error(

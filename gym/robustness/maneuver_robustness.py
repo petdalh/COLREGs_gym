@@ -18,13 +18,13 @@ class ManeuverRobustness(Robustness):
         self._configured = False
 
     def configure(self, spec_factory, tube_time_steps, ellipsoids_Ab_dict):
-        """Build and cache the spec with T_end = full tube horizon."""
+        """Build and cache the spec over the final reachable-tube interval."""
         if spec_factory is None or not tube_time_steps:
+            self._configured = False
             return
-        T_end = tube_time_steps[-1] - tube_time_steps[0]
-        if isinstance(T_end, float) and T_end.is_integer():
-            T_end = int(T_end)
-        self.spec = spec_factory(T_end=T_end)
+        T_end = len(tube_time_steps) - 1
+        T_start = max(0, T_end - 1)
+        self.spec = spec_factory(T_start=T_start, T_end=T_end)
         self.ellipsoids_Ab_dict = ellipsoids_Ab_dict
         self._configured = True
 

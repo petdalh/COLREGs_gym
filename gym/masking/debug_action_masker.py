@@ -12,10 +12,13 @@ from gym.utils.geometry import (
     wrap_angle,
 )
 from gym.utils.robustness import extract_robustness_upper, extract_robustness_lower
+from pacstl.core.factory import create as create_spec
 
 
-class ActionMasker:
+class DebugActionMasker:
     def __init__(self, action, vessel_model=None, ego_vessel_model=None, config=None):
+        self.vessel_model = vessel_model
+        self.ego_vessel_model = ego_vessel_model
         self.yaw_rate_commands = np.asarray(action.yaw_rate_commands, dtype=float)
         self.yaw_rate_commands_deg_s = np.asarray(
             action.yaw_rate_commands_deg_s, dtype=float
@@ -36,10 +39,13 @@ class ActionMasker:
         self.spec = None
         self._spec_factory = None
         self._spec_cache = {}
+        self._debug_spec_cache = {}
         self.ellipsoids_Ab_dict = None
         self.tube_time_steps = []
         self.reachable_tube = {}
         self._using_cached_tube = False
+        self.last_search_tree = None
+        self._debug_node_counter = 0
 
     def configure(self, config=None, vessel_model=None):
         config = dict(config or {})
@@ -109,6 +115,7 @@ class ActionMasker:
         self.spec = spec
         self._spec_factory = spec_factory
         self._spec_cache.clear()
+        self._debug_spec_cache.clear()
         self.ellipsoids_Ab_dict = ellipsoids_Ab_dict
 
         if (
@@ -140,6 +147,13 @@ class ActionMasker:
             self.reachable_tube = {}
             self._using_cached_tube = False
 
+    @staticmethod
+    def _normalize_spec_time(value):
+        value = float(value)
+        if value.is_integer():
+            return int(value)
+        return value
+
     def _get_spec_window(self, depth_idx: int):
         return max(0, depth_idx - 1), depth_idx
 
@@ -165,6 +179,103 @@ class ActionMasker:
             )
         return self._spec_cache[cache_key]
 
+    def _init_debug_tree(self):
+        self._debug_node_counter = 0
+        self.last_search_tree = {
+            "roots": [],
+            "nodes": {},
+            "safe_actions": [],
+            "fallback": False,
+        }
+
+    def _new_debug_node(self, parent_id, depth, first_action, pending_action):
+        node_id = self._debug_node_counter
+        self._debug_node_counter += 1
+        yaw_rate_cmd, surge_accel_cmd = self._decode_action(pending_action)
+        T_start, T_end = self._get_spec_window(depth)
+        record = {
+            "node_id": node_id,
+            "parent_id": parent_id,
+            "children": [],
+            "depth": depth,
+            "first_action": int(first_action),
+            "pending_action": int(pending_action),
+            "yaw_rate_cmd": float(yaw_rate_cmd),
+            "surge_accel_cmd": float(surge_accel_cmd),
+            "T_start": T_start,
+            "T_end": T_end,
+            "target_t": None,
+            "trajectory": None,
+            "partial_tube_times": [],
+            "next_state": None,
+            "maneuver_verified": None,
+            "sub_specs": {},
+            "pruned": False,
+            "certified_safe": False,
+            "evaluated": False,
+            "rejected_reason": None,
+        }
+        self.last_search_tree["nodes"][node_id] = record
+        if parent_id is None:
+            self.last_search_tree["roots"].append(node_id)
+        else:
+            self.last_search_tree["nodes"][parent_id]["children"].append(node_id)
+        return node_id
+
+    def _robustness_record(self, robustness):
+        return {
+            "raw": robustness,
+            "lower": extract_robustness_lower(robustness),
+            "upper": extract_robustness_upper(robustness),
+        }
+
+    def _debug_sub_spec_window(self, name, T_start, T_end):
+        if name == "collision_possible":
+            T_start = self._normalize_spec_time(max(0.0, float(T_start) - 1.0))
+        return T_start, T_end
+
+    def _get_debug_spec(self, name, T_start, T_end):
+        T_start, T_end = self._debug_sub_spec_window(name, T_start, T_end)
+        cache_key = (name, T_start, T_end)
+        if cache_key not in self._debug_spec_cache:
+            kwargs = {
+                "T_start": T_start,
+                "T_end": T_end,
+            }
+            if self.vessel_model is not None:
+                kwargs["vessel"] = self.vessel_model
+            if self.ego_vessel_model is not None:
+                kwargs["ego_vessel"] = self.ego_vessel_model
+            self._debug_spec_cache[cache_key] = create_spec("colregs", name, **kwargs)
+        return self._debug_spec_cache[cache_key]
+
+    def _evaluate_debug_sub_specs(self, T_start, T_end, partial_tube, trajectory):
+        results = {}
+        for name in ("occupancy_clear", "collision_possible"):
+            sub_T_start, sub_T_end = self._debug_sub_spec_window(
+                name,
+                T_start,
+                T_end,
+            )
+            try:
+                spec = self._get_debug_spec(name, T_start, T_end)
+                robustness = spec.evaluate(partial_tube, trajectory)
+                results[name] = {
+                    "T_start": sub_T_start,
+                    "T_end": sub_T_end,
+                    **self._robustness_record(robustness),
+                }
+            except Exception as exc:
+                results[name] = {
+                    "T_start": sub_T_start,
+                    "T_end": sub_T_end,
+                    "raw": None,
+                    "lower": None,
+                    "upper": None,
+                    "error": repr(exc),
+                }
+        return results
+
     def get_mask(
         self,
         situation,
@@ -177,15 +288,18 @@ class ActionMasker:
     ):
         mask = np.ones(self.n_actions, dtype=bool)
         is_fallback = False
+        self._init_debug_tree()
 
         if (
             self.spec is None and self._spec_factory is None
         ) or self.ellipsoids_Ab_dict is None:
+            self.last_search_tree["skip_reason"] = "missing_spec_or_tube"
             return mask, is_fallback
 
         if not within_monitoring_radius(
             encounter_vessel_eta, monitoring_radius, ego_state
         ):
+            self.last_search_tree["skip_reason"] = "outside_monitoring_radius"
             return mask, is_fallback
 
         # Build the action-hold-aligned time step list for this search.  Stored as an
@@ -194,6 +308,7 @@ class ActionMasker:
         self._search_tube_steps = self._aligned_tube_steps()
         effective_depth = min(self.decision_depth, len(self._search_tube_steps))
         if effective_depth == 0:
+            self.last_search_tree["skip_reason"] = "no_aligned_tube_steps"
             return mask, is_fallback
 
         mask = np.zeros(self.n_actions, dtype=bool)
@@ -247,6 +362,12 @@ class ActionMasker:
                 else self.pruning_threshold
             )
 
+            root_node_id = self._new_debug_node(
+                parent_id=None,
+                depth=0,
+                first_action=first_action,
+                pending_action=first_action,
+            )
             queue = deque(
                 [
                     {
@@ -257,6 +378,7 @@ class ActionMasker:
                         "pending_action": first_action,
                         "psi_d_offset": initial_psi_d_offset,
                         "cmd_u": initial_cmd_u,
+                        "debug_node_id": root_node_id,
                     }
                 ]
             )
@@ -264,6 +386,7 @@ class ActionMasker:
 
             while queue and not found_safe:
                 node = queue.popleft()  # BFS: shallowest nodes first
+                debug_record = self.last_search_tree["nodes"][node["debug_node_id"]]
 
                 yaw_rate_cmd, surge_accel_cmd = self._decode_action(
                     node["pending_action"]
@@ -274,10 +397,12 @@ class ActionMasker:
                     yaw_rate_cmd,
                     self.action_hold_dt,
                 ):
+                    debug_record["rejected_reason"] = "crossing_side"
                     continue
                 if self._violates_speed_floor(
                     node["cmd_u"], surge_accel_cmd, self.action_hold_dt
                 ):
+                    debug_record["rejected_reason"] = "speed_floor"
                     continue
                 next_state, rollout = self._simulate_depth_step(
                     state=node["state"],
@@ -305,11 +430,29 @@ class ActionMasker:
                 # detection robustness_margin.
                 rob_upper = extract_robustness_upper(robustness)
                 rob_lower = extract_robustness_lower(robustness)
+                T_start, T_end = self._get_spec_window(node["depth"])
+                debug_record.update(
+                    {
+                        "target_t": target_t,
+                        "trajectory": trajectory,
+                        "partial_tube_times": list(partial_tube.keys()),
+                        "next_state": next_state,
+                        "maneuver_verified": self._robustness_record(robustness),
+                        "sub_specs": self._evaluate_debug_sub_specs(
+                            T_start,
+                            T_end,
+                            partial_tube,
+                            trajectory,
+                        ),
+                        "evaluated": True,
+                    }
+                )
 
                 if rob_lower is not None:
                     best_rob = max(best_rob, rob_lower)
                     if rob_lower > self.certification_margin:
                         found_safe = True
+                        debug_record["certified_safe"] = True
                         break
                     # Heuristic pruning: if this node's upper bound is so far
                     # below the certification margin that recovery is unlikely,
@@ -321,11 +464,19 @@ class ActionMasker:
                         and np.isfinite(effective_pruning)
                         and rob_upper < effective_pruning
                     ):
+                        debug_record["pruned"] = True
+                        debug_record["rejected_reason"] = "pruning_threshold"
                         continue
 
                 next_depth = node["depth"] + 1
                 if next_depth < effective_depth:
                     for cont_action in cont_candidates:
+                        child_node_id = self._new_debug_node(
+                            parent_id=node["debug_node_id"],
+                            depth=next_depth,
+                            first_action=first_action,
+                            pending_action=cont_action,
+                        )
                         queue.append(
                             {
                                 "state": next_state,
@@ -337,12 +488,14 @@ class ActionMasker:
                                     next_state["psi_d_offset"]
                                 ),
                                 "cmd_u": float(next_state["nu"][0]),
+                                "debug_node_id": child_node_id,
                             }
                         )
 
             if found_safe:
                 mask[first_action] = True
                 any_safe_found = True
+                self.last_search_tree["safe_actions"].append(int(first_action))
 
             action_robustness[first_action] = best_rob
 
@@ -353,6 +506,7 @@ class ActionMasker:
 
         if not mask.any():
             is_fallback = True
+            self.last_search_tree["fallback"] = True
             candidate_rob = {
                 idx: action_robustness[idx]
                 for idx in first_action_candidates
@@ -414,8 +568,7 @@ class ActionMasker:
                 if fallback_idx is not None:
                     mask[fallback_idx] = True
                 print("[ActionMask] Emergency fallback: strongest non-port command only")
-        # print(f"[Debug] depth={node['depth']}, spec_window={self._get_spec_window(node['depth'])}, "
-        # f"trace_len={len(trajectory)}, robustness={robustness}")
+        
         return mask, is_fallback
 
     def _candidate_actions(self, situation):

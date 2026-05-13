@@ -23,24 +23,48 @@ class Masking:
         self.enabled = enabled
         self._steps_since_mask_update = 0
         self._default_action_masking_config = dict(action_masking_config or {})
+        self._action = action
         self._vessel_model = vessel_model
-        self._action_masker = ActionMasker(
-            action=action,
-            vessel_model=vessel_model,
-            ego_vessel_model=ego_vessel_model,
-            config=self._default_action_masking_config,
+        self._ego_vessel_model = ego_vessel_model
+        self._action_masker = self._build_action_masker(
+            self._default_action_masking_config
         )
         self._action_constraints = ActionConstraints(
             action=action,
             config=self._default_action_masking_config,
         )
 
+    def _build_action_masker(self, config):
+        if bool(dict(config or {}).get("debug_action_masker", False)):
+            from .debug_action_masker import DebugActionMasker
+
+            return DebugActionMasker(
+                action=self._action,
+                vessel_model=self._vessel_model,
+                ego_vessel_model=self._ego_vessel_model,
+                config=config,
+            )
+        return ActionMasker(
+            action=self._action,
+            vessel_model=self._vessel_model,
+            ego_vessel_model=self._ego_vessel_model,
+            config=config,
+        )
+
     def _default_mask(self):
         return np.ones(self.n_actions, dtype=bool)
+
+    @property
+    def last_search_tree(self):
+        return getattr(self._action_masker, "last_search_tree", None)
 
     def configure_for_scenario(self, encounter_scenario):
         scenario_cfg = getattr(encounter_scenario, "masking_configuration", None)
         config = scenario_cfg or self._default_action_masking_config
+        debug_enabled = bool(dict(config or {}).get("debug_action_masker", False))
+        using_debug = self._action_masker.__class__.__name__ == "DebugActionMasker"
+        if debug_enabled != using_debug:
+            self._action_masker = self._build_action_masker(config)
         self._action_masker.configure(
             config=config,
             vessel_model=self._vessel_model,

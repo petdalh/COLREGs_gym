@@ -2,7 +2,7 @@ from gym.utils.geometry import within_monitoring_radius
 import interval
 from pacstl.common.interfaces import TimeStampedState, PACReachableSet
 import numpy as np
-from gym.utils.geometry import to_obstacle_frame, wrap_angle
+from gym.utils.geometry import to_obstacle_frame
 
 
 class Robustness:
@@ -100,28 +100,65 @@ class Robustness:
             pred_obs_n = obs_n + obs_vn * time_step
             pred_obs_e = obs_e + obs_ve * time_step
 
-            local_pos, local_vel = to_obstacle_frame(
+            local_pos, local_psi, local_vel = to_obstacle_frame(
                 ego_pos=np.array([ego_n, ego_e]),
+                ego_psi=psi_ego,
                 ego_vel=np.array([ego_vn, ego_ve]),
                 obs_pos=np.array([pred_obs_n, pred_obs_e]),
                 obs_psi=obs_psi,
-                obs_vel=np.array([obs_vn, obs_ve]),
             )
             local_x, local_y = local_pos
-
-            # Relative heading (same as original)
-            psi_rel = -wrap_angle(psi_ego - obs_psi)
             local_vx, local_vy = local_vel
             speed = np.hypot(local_vx, local_vy)
 
-            # 6D state in obstacle-relative frame:
-            # [p_x, p_y, psi_rel, v_x, v_y, |v|]
             state_array = np.array(
-                [local_x, local_y, psi_rel, local_vx, local_vy, speed]
+                [local_x, local_y, local_psi, local_vx, local_vy, speed]
             )
 
             ego_trajectory[time_step] = TimeStampedState(
                 time_step=time_step, state_array=state_array
             )
 
+        self._log_eval_inputs(
+            eta=eta,
+            ego_vn=ego_vn,
+            ego_ve=ego_ve,
+            obs_n=obs_n,
+            obs_e=obs_e,
+            obs_psi=obs_psi,
+            obs_vn=obs_vn,
+            obs_ve=obs_ve,
+            ego_trajectory=ego_trajectory,
+            reachable_tube=reachable_tube,
+        )
         return self.spec.evaluate(reachable_tube, ego_trajectory)
+
+    @staticmethod
+    def _log_eval_inputs(
+        eta, ego_vn, ego_ve, obs_n, obs_e, obs_psi,
+        obs_vn, obs_ve, ego_trajectory, reachable_tube,
+    ):
+        # print("[Eval] ----------------------------------------")
+        # print(
+        #     f"[Eval] ego NED: pos=(N={eta[0]:.2f}, E={eta[1]:.2f}), "
+        #     f"psi={np.degrees(eta[2]):+.1f}deg, "
+        #     f"vel=(vN={ego_vn:+.3f}, vE={ego_ve:+.3f})"
+        # )
+        # print(
+        #     f"[Eval] obs NED: pos=(N={obs_n:.2f}, E={obs_e:.2f}), "
+        #     f"psi={np.degrees(obs_psi):+.1f}deg, "
+        #     f"vel=(vN={obs_vn:+.3f}, vE={obs_ve:+.3f})"
+        # )
+        # print("[Eval] ego trajectory (obstacle body frame):")
+        # for t in sorted(ego_trajectory.keys()):
+        #     s = ego_trajectory[t].state_array
+        #     print(
+        #         f"[Eval]   t={t:>4}: pos=({s[0]:+.2f}, {s[1]:+.2f}), "
+        #         f"psi={np.degrees(s[2]):+.1f}deg, "
+        #         f"vel=({s[3]:+.3f}, {s[4]:+.3f}), |v|={s[5]:.3f}"
+        #     )
+        # print("[Eval] reachable set centers (obstacle body frame):")
+        # for t in sorted(reachable_tube.keys()):
+        #     c = reachable_tube[t].center
+        #     print(f"[Eval]   t={t:>4}: center={np.array2string(np.asarray(c), precision=2, suppress_small=True)}")
+        return
