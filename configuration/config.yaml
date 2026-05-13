@@ -1,6 +1,6 @@
 wandb_configuration:
   project: "colregs-ppo"      
-  run_name: backstepping_low_speed_cap
+  run_name: updated_action_masking
   group: null                   
   enabled: true
 
@@ -13,7 +13,7 @@ training_configuration:
   checkpoint_freq: 100000
   tensorboard_log: logs/colregs_ppo
   plot_dir: plots
-  plot_every_episodes: 10
+  plot_every_episodes: 20
   policy_net_arch: [128, 128]
   n_steps: 512
   batch_size: 64
@@ -21,11 +21,11 @@ training_configuration:
 
 environment_configuration:
   controller_type: mrac   # backstepping | mrac
-  dt: 0.5
+  dt: 0.25
   grid_width: 25.0
   grid_height: 62.0
-  decision_interval: 10
-  sim_dt: 0.5
+  decision_interval: 20
+  sim_dt: 0.25
   initial_surge_command_fraction: 0.7
   min_surge_command_mps: 0.1
   pre_maneuver_duration_s: 10.0
@@ -34,13 +34,15 @@ environment_configuration:
     speed_floor_enabled: true
 
   action_configuration:
-    yaw_rate_commands_deg_s: [-1.0, -0.5, -0.25, 0, 0.25, 0.5, 1.0]
+    yaw_rate_commands_deg_s: [-1.0, -0.5, 0.0, 0.5, 1.0]
     surge_accel_commands: [0.0]
 
   masking_configuration:
+    debug_action_masker: false
     sim_dt: 0.5
-    decision_depth: 3
-    certification_margin: 3.0
+    decision_depth: 2
+    certification_margin: 0.0
+    fallback_robustness_tolerance: 0.5
     pruning_threshold: -2.0
     use_3dof_dynamics: true      # set true to enable shoeboxpy 3DOF integration
     shoebox_sub_dt: 0.1           # RK4 substep within each sim_dt chunk (s)
