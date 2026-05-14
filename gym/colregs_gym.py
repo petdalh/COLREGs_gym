@@ -325,7 +325,7 @@ class COLREGsGym(McGym):
         info["control/tau_surge"] = float(last_tau[0])
         info["control/tau_yaw"] = float(last_tau[2])
 
-        if terminated or truncated:
+        if (terminated or truncated) and self.callback is not None:
             self.callback.on_episode_end(info, terminated, self.reward)
 
         return obs, reward, terminated, truncated, info

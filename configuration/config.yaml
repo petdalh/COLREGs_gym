@@ -1,5 +1,5 @@
 wandb_configuration:
-  project: "colregs-ppo"      
+  project: "idun-test"      
   run_name: updated_action_masking
   group: null                   
   enabled: true
@@ -13,10 +13,14 @@ training_configuration:
   checkpoint_freq: 100000
   tensorboard_log: logs/colregs_ppo
   plot_dir: plots
-  plot_every_episodes: 20
+  plot_every_episodes: 50
+  num_envs: null                 # null -> SLURM_CPUS_PER_TASK if set, otherwise 1
+  pin_memory: false              # CPU training; only relevant for GPU data loading
+  print_episode_summary: false   # avoids noisy interleaved Slurm logs with subprocess envs
+  vec_env_start_method: forkserver
   policy_net_arch: [128, 128]
   n_steps: 512
-  batch_size: 64
+  batch_size: 256
   learning_rate: 3.0e-4
 
 environment_configuration:

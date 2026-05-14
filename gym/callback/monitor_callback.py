@@ -19,7 +19,10 @@ class ColregsMonitorCallback(BaseCallback):
         super().__init__()
         self.eval_env = getattr(eval_env, "unwrapped", eval_env)
         self.plot_dir = plot_dir
-        self.plot_every = plot_every_episodes
+        self.plot_every = int(plot_every_episodes)
+        if self.plot_every < 0:
+            raise ValueError("plot_every_episodes must be >= 0")
+        self.next_plot_episode = self.plot_every if self.plot_every > 0 else None
 
         self.step_rewards = []
         self.step_timesteps = []
@@ -38,14 +41,10 @@ class ColregsMonitorCallback(BaseCallback):
             "reward_wrong_side_crossing",
             "reward_safe_distance",
         ]
-        self._ep_reward_sums = {k: 0.0 for k in self._REWARD_KEYS}
-        self._ep_reward_steps = 0
         self._rolling_reward_means = {
             k: collections.deque(maxlen=10) for k in self._REWARD_KEYS
         }
 
-        self._ep_mask_allowed = []
-        self._ep_fallback_flags = []
         self._rolling_mask_allowed = collections.deque(maxlen=10)
         self._rolling_fallback_rate = collections.deque(maxlen=10)
 
@@ -63,13 +62,35 @@ class ColregsMonitorCallback(BaseCallback):
             "control/tau_surge",
             "control/tau_yaw",
         ]
-        self._ep_control_sums = {k: 0.0 for k in self._CONTROL_KEYS}
-        self._ep_control_steps = 0
         self._rolling_control_means = {
             k: collections.deque(maxlen=10) for k in self._CONTROL_KEYS
         }
 
+        self._n_envs = 0
+        self._ep_reward_sums = []
+        self._ep_reward_steps = []
+        self._ep_mask_allowed = []
+        self._ep_fallback_flags = []
+        self._ep_control_sums = []
+        self._ep_control_steps = []
+
         os.makedirs(plot_dir, exist_ok=True)
+
+    def _ensure_env_accumulators(self, n_envs):
+        if n_envs == self._n_envs:
+            return
+
+        self._n_envs = n_envs
+        self._ep_reward_sums = [
+            {k: 0.0 for k in self._REWARD_KEYS} for _ in range(n_envs)
+        ]
+        self._ep_reward_steps = [0 for _ in range(n_envs)]
+        self._ep_mask_allowed = [[] for _ in range(n_envs)]
+        self._ep_fallback_flags = [[] for _ in range(n_envs)]
+        self._ep_control_sums = [
+            {k: 0.0 for k in self._CONTROL_KEYS} for _ in range(n_envs)
+        ]
+        self._ep_control_steps = [0 for _ in range(n_envs)]
 
     def _on_step(self):
         rewards = self.locals.get("rewards")
@@ -78,23 +99,29 @@ class ColregsMonitorCallback(BaseCallback):
             self.step_timesteps.append(int(self.num_timesteps))
 
         infos = self.locals.get("infos", [])
-        for info in infos:
+        if isinstance(infos, dict):
+            infos = [infos]
+        self._ensure_env_accumulators(len(infos))
+
+        for env_idx, info in enumerate(infos):
             for key in self._REWARD_KEYS:
                 val = info.get(key)
                 if val is not None:
-                    self._ep_reward_sums[key] += float(val)
-            self._ep_reward_steps += 1
+                    self._ep_reward_sums[env_idx][key] += float(val)
+            self._ep_reward_steps[env_idx] += 1
 
             for key in self._CONTROL_KEYS:
                 val = info.get(key)
                 if val is not None:
                     # use abs for error terms so rolling means show magnitude trends
-                    self._ep_control_sums[key] += abs(float(val)) if "error" in key else float(val)
-            self._ep_control_steps += 1
+                    self._ep_control_sums[env_idx][key] += (
+                        abs(float(val)) if "error" in key else float(val)
+                    )
+            self._ep_control_steps[env_idx] += 1
 
             if info.get("encounter_active"):
-                self._ep_mask_allowed.append(info["mask_allowed_count"])
-                self._ep_fallback_flags.append(int(info["mask_fallback"]))
+                self._ep_mask_allowed[env_idx].append(info["mask_allowed_count"])
+                self._ep_fallback_flags[env_idx].append(int(info["mask_fallback"]))
 
             if "episode" in info:
                 self.episode_count += 1
@@ -104,28 +131,34 @@ class ColregsMonitorCallback(BaseCallback):
                 reason = info.get("reason", "unknown")
                 self.episode_reasons.append(reason)
 
-                if self._ep_reward_steps > 0:
+                if self._ep_reward_steps[env_idx] > 0:
                     for k in self._REWARD_KEYS:
                         self._rolling_reward_means[k].append(
-                            self._ep_reward_sums[k] / self._ep_reward_steps
+                            self._ep_reward_sums[env_idx][k]
+                            / self._ep_reward_steps[env_idx]
                         )
-                self._ep_reward_sums = {k: 0.0 for k in self._REWARD_KEYS}
-                self._ep_reward_steps = 0
+                self._ep_reward_sums[env_idx] = {k: 0.0 for k in self._REWARD_KEYS}
+                self._ep_reward_steps[env_idx] = 0
 
-                if self._ep_control_steps > 0:
+                if self._ep_control_steps[env_idx] > 0:
                     for k in self._CONTROL_KEYS:
                         self._rolling_control_means[k].append(
-                            self._ep_control_sums[k] / self._ep_control_steps
+                            self._ep_control_sums[env_idx][k]
+                            / self._ep_control_steps[env_idx]
                         )
-                self._ep_control_sums = {k: 0.0 for k in self._CONTROL_KEYS}
-                self._ep_control_steps = 0
+                self._ep_control_sums[env_idx] = {k: 0.0 for k in self._CONTROL_KEYS}
+                self._ep_control_steps[env_idx] = 0
 
-                if self._ep_mask_allowed:
-                    self._rolling_mask_allowed.append(float(np.mean(self._ep_mask_allowed)))
-                if self._ep_fallback_flags:
-                    self._rolling_fallback_rate.append(float(np.mean(self._ep_fallback_flags)))
-                self._ep_mask_allowed = []
-                self._ep_fallback_flags = []
+                if self._ep_mask_allowed[env_idx]:
+                    self._rolling_mask_allowed.append(
+                        float(np.mean(self._ep_mask_allowed[env_idx]))
+                    )
+                if self._ep_fallback_flags[env_idx]:
+                    self._rolling_fallback_rate.append(
+                        float(np.mean(self._ep_fallback_flags[env_idx]))
+                    )
+                self._ep_mask_allowed[env_idx] = []
+                self._ep_fallback_flags[env_idx] = []
 
                 if self.episode_count % 1 == 0:
                     avg_r = np.mean(self.episode_rewards[-10:])
@@ -142,9 +175,13 @@ class ColregsMonitorCallback(BaseCallback):
                         }
                         masking_log = {}
                         if self._rolling_mask_allowed:
-                            masking_log["masking/allowed_actions"] = float(np.mean(self._rolling_mask_allowed))
+                            masking_log["masking/allowed_actions"] = float(
+                                np.mean(self._rolling_mask_allowed)
+                            )
                         if self._rolling_fallback_rate:
-                            masking_log["masking/fallback_rate"] = float(np.mean(self._rolling_fallback_rate))
+                            masking_log["masking/fallback_rate"] = float(
+                                np.mean(self._rolling_fallback_rate)
+                            )
                         control_log = {
                             k: float(np.mean(v))
                             for k, v in self._rolling_control_means.items()
@@ -165,12 +202,19 @@ class ColregsMonitorCallback(BaseCallback):
                             step=self.num_timesteps,
                         )
 
-                if self.episode_count % self.plot_every == 0:
-                    self._run_eval_episode()
+                while (
+                    self.next_plot_episode is not None
+                    and self.episode_count >= self.next_plot_episode
+                ):
+                    self._run_eval_episode(episode_num=self.next_plot_episode)
+                    self.next_plot_episode += self.plot_every
 
         return True
 
-    def _run_eval_episode(self):
+    def _run_eval_episode(self, episode_num=None):
+        if episode_num is None:
+            episode_num = self.episode_count
+
         obs, _ = self.eval_env.reset()
         done = False
         ep_actions = []
@@ -182,7 +226,7 @@ class ColregsMonitorCallback(BaseCallback):
             obs, reward, terminated, truncated, info = self.eval_env.step(action)
             done = terminated or truncated
 
-        tag = f"ep{self.episode_count:05d}"
+        tag = f"ep{episode_num:05d}"
         step_dt = self.eval_env.dt * getattr(self.eval_env, "decision_interval", 5)
 
         plot_episode_trajectory(
@@ -191,7 +235,7 @@ class ColregsMonitorCallback(BaseCallback):
             enc_traj=self.eval_env.history_enc,
             goal=self.eval_env.goal[:2],
             dt=self.eval_env.dt,
-            episode_num=self.episode_count,
+            episode_num=episode_num,
             save_path=os.path.join(self.plot_dir, f"traj_{tag}.png"),
         )
 

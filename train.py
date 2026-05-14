@@ -1,10 +1,11 @@
 import argparse
+import os
 import shutil
 from pathlib import Path
 
 from sb3_contrib import MaskablePPO
 from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback
-from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecMonitor
 
 import wandb
 
@@ -46,7 +47,7 @@ def configure_monitoring(env, monitoring_cfg):
     return True
 
 
-def make_env(config, enable_monitoring):
+def make_env(config, enable_monitoring, enable_episode_logging=True):
     env_cfg = config.get("environment_configuration", {})
     encounter_cfg = dict(env_cfg.get("encounter_configuration", {}))
     monitoring_cfg = env_cfg.get("monitoring_configuration", {})
@@ -68,7 +69,80 @@ def make_env(config, enable_monitoring):
                 "without pacSTL masking."
             )
 
+    if not enable_episode_logging:
+        env.callback = None
+
     return env
+
+
+def _optional_positive_int(value, name):
+    if value is None:
+        return None
+    parsed = int(value)
+    if parsed < 1:
+        raise ValueError(f"{name} must be >= 1, got {parsed}")
+    return parsed
+
+
+def resolve_num_envs(train_cfg):
+    configured = _optional_positive_int(
+        train_cfg.get("num_envs", train_cfg.get("num_workers")),
+        "training_configuration.num_envs",
+    )
+    slurm_cpus = _optional_positive_int(
+        os.environ.get("SLURM_CPUS_PER_TASK"),
+        "SLURM_CPUS_PER_TASK",
+    )
+
+    num_envs = configured or slurm_cpus or 1
+    if slurm_cpus is not None:
+        num_envs = min(num_envs, slurm_cpus)
+    return num_envs, slurm_cpus
+
+
+def configure_cpu_threading(num_envs):
+    if num_envs <= 1:
+        return
+
+    for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+        os.environ.setdefault(name, "1")
+
+    try:
+        import torch
+    except ImportError:
+        return
+    torch.set_num_threads(1)
+
+
+def make_train_env_fn(config, enable_monitoring, enable_episode_logging):
+    def _init():
+        return make_env(
+            config,
+            enable_monitoring=enable_monitoring,
+            enable_episode_logging=enable_episode_logging,
+        )
+
+    return _init
+
+
+def build_train_env(config, num_envs, train_cfg, enable_monitoring):
+    enable_episode_logging = bool(
+        train_cfg.get("print_episode_summary", num_envs == 1)
+    )
+    env_fns = [
+        make_train_env_fn(
+            config,
+            enable_monitoring=enable_monitoring,
+            enable_episode_logging=enable_episode_logging,
+        )
+        for _ in range(num_envs)
+    ]
+
+    if num_envs == 1:
+        return VecMonitor(DummyVecEnv(env_fns))
+
+    start_method = train_cfg.get("vec_env_start_method", "forkserver")
+    return VecMonitor(SubprocVecEnv(env_fns, start_method=start_method))
 
 
 def build_model(env, checkpoint_path: Path, train_cfg):
@@ -113,6 +187,16 @@ def main():
     args = parse_args()
     config = load_config(args.config)
     train_cfg = config.get("training_configuration", {})
+    num_envs, slurm_cpus = resolve_num_envs(train_cfg)
+    configure_cpu_threading(num_envs)
+
+    if slurm_cpus is None:
+        print(f"Using {num_envs} training environment(s).")
+    else:
+        print(
+            f"Using {num_envs} training environment(s) "
+            f"from SLURM_CPUS_PER_TASK={slurm_cpus}."
+        )
 
     checkpoint_dir = Path(train_cfg.get("checkpoint_dir", "checkpoints/ppo_mask"))
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -137,17 +221,25 @@ def main():
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
         Path(tensorboard_log).mkdir(parents=True, exist_ok=True)
 
-    env = make_env(config, enable_monitoring=not args.disable_monitoring)
-    env = Monitor(env)
+    env = build_train_env(
+        config,
+        num_envs=num_envs,
+        train_cfg=train_cfg,
+        enable_monitoring=not args.disable_monitoring,
+    )
 
-    eval_env = make_env(config, enable_monitoring=not args.disable_monitoring)
+    eval_env = make_env(
+        config,
+        enable_monitoring=not args.disable_monitoring,
+        enable_episode_logging=False,
+    )
 
     train_cfg = dict(train_cfg)
     train_cfg["tensorboard_log"] = tensorboard_log
     model = build_model(env, model_path, train_cfg)
 
     checkpoint_callback = CheckpointCallback(
-        save_freq=train_cfg.get("checkpoint_freq", 10000),
+        save_freq=max(int(train_cfg.get("checkpoint_freq", 10000)) // num_envs, 1),
         save_path=str(checkpoint_dir),
         name_prefix="colregs_maskable_ppo",
     )
@@ -166,6 +258,7 @@ def main():
 
     model.save(str(model_path))
     env.close()
+    eval_env.close()
 
     if run:
         run.finish()
