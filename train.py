@@ -183,6 +183,24 @@ def parse_args():
     return parser.parse_args()
 
 
+def build_wandb_config(config, args):
+    return {
+        **config,
+        "run_metadata": {
+            "config_path": str(Path(args.config).resolve()),
+            "disable_monitoring": args.disable_monitoring,
+            "timesteps_override": args.timesteps,
+        },
+    }
+
+
+def save_wandb_config_file(run, config_path):
+    source_path = Path(config_path).resolve()
+    saved_path = Path(run.dir) / "config.yaml"
+    shutil.copy2(source_path, saved_path)
+    wandb.save(str(saved_path), base_path=run.dir, policy="now")
+
+
 def main():
     args = parse_args()
     config = load_config(args.config)
@@ -210,7 +228,9 @@ def main():
             project=wandb_cfg.get("project", "colregs-ppo"),
             name=wandb_cfg.get("run_name"),
             group=wandb_cfg.get("group"),
+            config=build_wandb_config(config, args),
         )
+        save_wandb_config_file(run, args.config)
 
     model_path = checkpoint_dir / "colregs_maskable_ppo.zip"
 
