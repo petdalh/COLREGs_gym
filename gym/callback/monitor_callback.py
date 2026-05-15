@@ -46,6 +46,7 @@ class ColregsMonitorCallback(BaseCallback):
         }
 
         self._rolling_mask_allowed = collections.deque(maxlen=10)
+        self._rolling_mask_allowed_fraction = collections.deque(maxlen=10)
         self._rolling_fallback_rate = collections.deque(maxlen=10)
 
         self._CONTROL_KEYS = [
@@ -70,11 +71,35 @@ class ColregsMonitorCallback(BaseCallback):
         self._ep_reward_sums = []
         self._ep_reward_steps = []
         self._ep_mask_allowed = []
+        self._ep_mask_allowed_fraction = []
         self._ep_fallback_flags = []
         self._ep_control_sums = []
         self._ep_control_steps = []
+        self._ep_wrong_side_crossing = []
+        self._total_actions = self._resolve_action_count(self.eval_env)
+        self._cumulative_collisions = 0
+        self._cumulative_goals = 0
+        self._cumulative_timeouts = 0
+        self._cumulative_wrong_side_crossings = 0
 
         os.makedirs(plot_dir, exist_ok=True)
+
+    @staticmethod
+    def _resolve_action_count(env):
+        action_space = getattr(env, "action_space", None)
+        action_count = getattr(action_space, "n", None)
+        if action_count is not None:
+            return int(action_count)
+
+        unwrapped = getattr(env, "unwrapped", None)
+        if unwrapped is not None and unwrapped is not env:
+            return ColregsMonitorCallback._resolve_action_count(unwrapped)
+
+        envs = getattr(env, "envs", None)
+        if envs:
+            return ColregsMonitorCallback._resolve_action_count(envs[0])
+
+        return None
 
     def _ensure_env_accumulators(self, n_envs):
         if n_envs == self._n_envs:
@@ -86,11 +111,17 @@ class ColregsMonitorCallback(BaseCallback):
         ]
         self._ep_reward_steps = [0 for _ in range(n_envs)]
         self._ep_mask_allowed = [[] for _ in range(n_envs)]
+        self._ep_mask_allowed_fraction = [[] for _ in range(n_envs)]
         self._ep_fallback_flags = [[] for _ in range(n_envs)]
         self._ep_control_sums = [
             {k: 0.0 for k in self._CONTROL_KEYS} for _ in range(n_envs)
         ]
         self._ep_control_steps = [0 for _ in range(n_envs)]
+        self._ep_wrong_side_crossing = [False for _ in range(n_envs)]
+
+    def _on_training_start(self):
+        if self._total_actions is None:
+            self._total_actions = self._resolve_action_count(self.training_env)
 
     def _on_step(self):
         rewards = self.locals.get("rewards")
@@ -107,7 +138,14 @@ class ColregsMonitorCallback(BaseCallback):
             for key in self._REWARD_KEYS:
                 val = info.get(key)
                 if val is not None:
-                    self._ep_reward_sums[env_idx][key] += float(val)
+                    val = float(val)
+                    self._ep_reward_sums[env_idx][key] += val
+                    if (
+                        key == "reward_wrong_side_crossing"
+                        and np.isfinite(val)
+                        and not np.isclose(val, 0.0)
+                    ):
+                        self._ep_wrong_side_crossing[env_idx] = True
             self._ep_reward_steps[env_idx] += 1
 
             for key in self._CONTROL_KEYS:
@@ -120,7 +158,12 @@ class ColregsMonitorCallback(BaseCallback):
             self._ep_control_steps[env_idx] += 1
 
             if info.get("encounter_active"):
-                self._ep_mask_allowed[env_idx].append(info["mask_allowed_count"])
+                allowed_count = int(info["mask_allowed_count"])
+                self._ep_mask_allowed[env_idx].append(allowed_count)
+                if self._total_actions:
+                    self._ep_mask_allowed_fraction[env_idx].append(
+                        allowed_count / self._total_actions
+                    )
                 self._ep_fallback_flags[env_idx].append(int(info["mask_fallback"]))
 
             if "episode" in info:
@@ -130,6 +173,16 @@ class ColregsMonitorCallback(BaseCallback):
 
                 reason = info.get("reason", "unknown")
                 self.episode_reasons.append(reason)
+                if reason == "collision":
+                    self._cumulative_collisions += 1
+                elif reason == "goal_reached":
+                    self._cumulative_goals += 1
+                elif reason == "time_limit":
+                    self._cumulative_timeouts += 1
+
+                if self._ep_wrong_side_crossing[env_idx]:
+                    self._cumulative_wrong_side_crossings += 1
+                self._ep_wrong_side_crossing[env_idx] = False
 
                 if self._ep_reward_steps[env_idx] > 0:
                     for k in self._REWARD_KEYS:
@@ -153,11 +206,16 @@ class ColregsMonitorCallback(BaseCallback):
                     self._rolling_mask_allowed.append(
                         float(np.mean(self._ep_mask_allowed[env_idx]))
                     )
+                if self._ep_mask_allowed_fraction[env_idx]:
+                    self._rolling_mask_allowed_fraction.append(
+                        float(np.mean(self._ep_mask_allowed_fraction[env_idx]))
+                    )
                 if self._ep_fallback_flags[env_idx]:
                     self._rolling_fallback_rate.append(
                         float(np.mean(self._ep_fallback_flags[env_idx]))
                     )
                 self._ep_mask_allowed[env_idx] = []
+                self._ep_mask_allowed_fraction[env_idx] = []
                 self._ep_fallback_flags[env_idx] = []
 
                 if self.episode_count % 1 == 0:
@@ -178,10 +236,22 @@ class ColregsMonitorCallback(BaseCallback):
                             masking_log["masking/allowed_actions"] = float(
                                 np.mean(self._rolling_mask_allowed)
                             )
+                        if self._rolling_mask_allowed_fraction:
+                            masking_log["masking/allowed_action_fraction"] = float(
+                                np.mean(self._rolling_mask_allowed_fraction)
+                            )
                         if self._rolling_fallback_rate:
                             masking_log["masking/fallback_rate"] = float(
                                 np.mean(self._rolling_fallback_rate)
                             )
+                        event_log = {
+                            "events/collisions_cumulative": self._cumulative_collisions,
+                            "events/goals_cumulative": self._cumulative_goals,
+                            "events/timeouts_cumulative": self._cumulative_timeouts,
+                            "events/wrong_side_crossings_cumulative": (
+                                self._cumulative_wrong_side_crossings
+                            ),
+                        }
                         control_log = {
                             k: float(np.mean(v))
                             for k, v in self._rolling_control_means.items()
@@ -197,6 +267,7 @@ class ColregsMonitorCallback(BaseCallback):
                                 "timeout_rate": timeouts / 10,
                                 **rew_log,
                                 **masking_log,
+                                **event_log,
                                 **control_log,
                             },
                             step=self.num_timesteps,

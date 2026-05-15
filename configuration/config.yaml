@@ -1,6 +1,6 @@
 wandb_configuration:
   project: "idun-test"      
-  run_name: updated_action_masking
+  run_name: min_max_depth_run
   group: null                   
   enabled: true
 
@@ -44,7 +44,8 @@ environment_configuration:
   masking_configuration:
     debug_action_masker: false
     sim_dt: 0.5
-    decision_depth: 2
+    min_search_depth: 2
+    decision_depth: 3
     certification_margin: 0.0
     fallback_robustness_tolerance: 0.5
     pruning_threshold: -2.0
