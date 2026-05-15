@@ -705,8 +705,8 @@ class ActionMasker:
         """Simulate one tube-time-step of trajectory from the given state.
 
         Returns (next_state, {target_t: TimeStampedState}) where the TimeStampedState
-        is in obstacle-relative frame. encounter_vessel_eta is the current (t=0)
-        obstacle position; obstacle is linearly extrapolated to target_t.
+        is in the obstacle's t=0 body frame. Reachable tube centers already
+        encode the obstacle's nominal displacement at each target_t.
         """
         eta = state["eta"]
         px, py = eta[0], eta[1]
@@ -718,8 +718,6 @@ class ActionMasker:
         u = float(cmd_u)
 
         obs_n, obs_e, obs_psi = encounter_vessel_eta
-        obs_vn = encounter_speed * np.cos(obs_psi)
-        obs_ve = encounter_speed * np.sin(obs_psi)
 
         search_steps = getattr(self, "_search_tube_steps", self.tube_time_steps)
         start_t = 0.0 if depth_idx == 0 else float(search_steps[depth_idx - 1])
@@ -809,14 +807,13 @@ class ActionMasker:
             ve = u * np.sin(psi)
             nu_out = np.array([u, 0.0, 0.0])
 
-        pred_obs_n = obs_n + obs_vn * target_t
-        pred_obs_e = obs_e + obs_ve * target_t
-
         local_pos, local_psi, local_vel = to_obstacle_frame(
             ego_pos=np.array([px, py]),
             ego_psi=psi,
             ego_vel=np.array([vn, ve]),
-            obs_pos=np.array([pred_obs_n, pred_obs_e]),
+            # Reachable tube states are anchored in the obstacle's t=0 body
+            # frame; the tube center already carries nominal obstacle motion.
+            obs_pos=np.array([obs_n, obs_e]),
             obs_psi=obs_psi,
         )
 
