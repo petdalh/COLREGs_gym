@@ -26,9 +26,9 @@ environment_configuration:
   grid_height: 62.0
   decision_interval: 20
   sim_dt: 0.25
-  initial_surge_command_fraction: 0.7
+  initial_surge_command_fraction: 0.5
   min_surge_command_mps: 0.1
-  pre_maneuver_duration_s: 10.0
+  pre_maneuver_duration_s: 5.0
 
   action_constraints:
     speed_floor_enabled: true
@@ -40,9 +40,9 @@ environment_configuration:
   masking_configuration:
     debug_action_masker: false
     sim_dt: 0.5
-    min_search_depth: 3
-    decision_depth: 5
-    certification_margin: 0.0
+    min_search_depth: 2
+    decision_depth: 2
+    certification_margin: 3.0
     fallback_robustness_tolerance: 0.5
     pruning_threshold: -2.0
     use_3dof_dynamics: true      # set true to enable shoeboxpy 3DOF integration
@@ -65,9 +65,9 @@ environment_configuration:
     start_position: [1.5, 7.5, 0.0]
     wave_conditions: [0.05, 1.5, 0.0]
     encounter_type: crossing
-    separation: 40.0
+    separation: 30.0
     target_speed: 0.2
-    goal_ahead_distance: 60.0
+    goal_ahead_distance: 50.0
     collision_radius: 2.0
     simtime: 500.0
     maneuver_horizon: 10.0

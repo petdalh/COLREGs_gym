@@ -96,15 +96,13 @@ class Robustness:
             ego_n = eta[0] + ego_vn * time_step
             ego_e = eta[1] + ego_ve * time_step
 
-            # Predict obstacle position in world frame at this time step
-            pred_obs_n = obs_n + obs_vn * time_step
-            pred_obs_e = obs_e + obs_ve * time_step
-
             local_pos, local_psi, local_vel = to_obstacle_frame(
                 ego_pos=np.array([ego_n, ego_e]),
                 ego_psi=psi_ego,
                 ego_vel=np.array([ego_vn, ego_ve]),
-                obs_pos=np.array([pred_obs_n, pred_obs_e]),
+                # Reachable tube states are anchored in the obstacle's t=0 body
+                # frame; the tube center already carries nominal obstacle motion.
+                obs_pos=np.array([obs_n, obs_e]),
                 obs_psi=obs_psi,
             )
             local_x, local_y = local_pos
