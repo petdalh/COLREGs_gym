@@ -13,7 +13,7 @@ training_configuration:
   checkpoint_freq: 100000
   tensorboard_log: logs/colregs_ppo
   plot_dir: plots
-  plot_every_episodes: 20
+  plot_every_episodes: 1
   policy_net_arch: [128, 128]
   n_steps: 512
   batch_size: 64
@@ -40,6 +40,7 @@ environment_configuration:
   masking_configuration:
     debug_action_masker: false
     sim_dt: 0.5
+    min_search_depth: 2
     decision_depth: 2
     certification_margin: 0.0
     fallback_robustness_tolerance: 0.5

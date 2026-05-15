@@ -31,6 +31,7 @@ class DebugActionMasker:
         self.decision_interval = 1
         self.action_hold_dt = self.dt * self.decision_interval
         self.decision_depth = 5
+        self.min_search_depth = 1
         self._shoebox = None
         self._use_3dof = False
         self._shoebox_sub_dt = 0.1
@@ -57,6 +58,17 @@ class DebugActionMasker:
         )
         self.action_hold_dt = self.dt * self.decision_interval
         self.decision_depth = int(config.get("decision_depth", self.decision_depth))
+        self.min_search_depth = int(
+            config.get("min_search_depth", self.min_search_depth)
+        )
+        if self.min_search_depth < 1:
+            raise ValueError("min_search_depth must be >= 1.")
+        if self.min_search_depth > self.decision_depth:
+            raise ValueError(
+                "min_search_depth must be <= decision_depth "
+                f"(got min_search_depth={self.min_search_depth}, "
+                f"decision_depth={self.decision_depth})."
+            )
         self.min_surge_command_mps = float(
             config.get(
                 "min_surge_command_mps",
@@ -212,6 +224,7 @@ class DebugActionMasker:
             "sub_specs": {},
             "pruned": False,
             "certified_safe": False,
+            "blocked_by_min_search_depth": False,
             "evaluated": False,
             "rejected_reason": None,
         }
@@ -450,17 +463,23 @@ class DebugActionMasker:
 
                 if rob_lower is not None:
                     best_rob = max(best_rob, rob_lower)
-                    if rob_lower > self.certification_margin:
+                    min_depth_reached = (
+                        node["depth"] + 1 >= self.min_search_depth
+                    )
+                    if rob_lower > self.certification_margin and min_depth_reached:
                         found_safe = True
                         debug_record["certified_safe"] = True
                         break
+                    if rob_lower > self.certification_margin:
+                        debug_record["blocked_by_min_search_depth"] = True
                     # Heuristic pruning: if this node's upper bound is so far
                     # below the certification margin that recovery is unlikely,
                     # skip expanding its children.  pruning_threshold defaults
                     # to -inf (disabled); effective_pruning may be tightened
                     # dynamically once a safe action has already been found.
                     if (
-                        rob_upper is not None
+                        rob_lower <= self.certification_margin
+                        and rob_upper is not None
                         and np.isfinite(effective_pruning)
                         and rob_upper < effective_pruning
                     ):
