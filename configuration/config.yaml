@@ -1,6 +1,6 @@
 wandb_configuration:
   project: "idun-test"      
-  run_name: min_max_depth_run
+  run_name: test_extra_debug
   group: null                   
   enabled: true
 
@@ -42,7 +42,7 @@ environment_configuration:
     surge_accel_commands: [0.0]
 
   masking_configuration:
-    debug_action_masker: false
+    debug_action_masker: true
     sim_dt: 0.5
     min_search_depth: 2
     decision_depth: 3
@@ -54,7 +54,7 @@ environment_configuration:
     pruning_threshold: -2.0
     use_3dof_dynamics: true      # set true to enable shoeboxpy 3DOF integration
     shoebox_sub_dt: 0.1           # RK4 substep within each sim_dt chunk (s)
-    # CSAD parameters (from McHorcrux csad.json, freq index 41).
+    # CSAD parameters (from McHorcrux csad.json).
     # alpha/beta are back-calculated so shoebox's MA and D match CSAD derivatives:
     #   m_sb = rho*L*B*T = 156.04 kg,  Izz_sb = 89.00 kg·m²
     shoebox_L: 2.578

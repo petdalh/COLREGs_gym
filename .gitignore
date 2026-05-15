@@ -12,4 +12,6 @@ tea_debug.log
 /reachable_sets/reachable_sets_old/
 /reachable_sets/reachable_sets_old2/
 top_level_tests/
-configuration/
+configuration/*
+!configuration/config.yaml
+!configuration/config_min2_depth*.yaml

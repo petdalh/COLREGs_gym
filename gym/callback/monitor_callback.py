@@ -50,8 +50,6 @@ class ColregsMonitorCallback(BaseCallback):
         self._rolling_fallback_rate = collections.deque(maxlen=10)
         self._MASK_DIAGNOSTIC_KEYS = [
             "masking/effective_depth",
-            "masking/decision_depth",
-            "masking/min_search_depth",
             "masking/candidate_actions",
             "masking/search_safe_actions",
             "masking/certified_actions",
@@ -64,8 +62,6 @@ class ColregsMonitorCallback(BaseCallback):
             "masking/fallback_action",
             "masking/fallback_action_yaw_deg_s",
             "masking/fallback_allowed_all",
-            "masking/enforce_starboard_crossing_side",
-            "masking/require_full_depth_certificate",
             "masking/min_distance_interval",
             "masking/maneuver_verified_lower_min",
             "masking/maneuver_verified_lower_max",

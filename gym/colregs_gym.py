@@ -362,8 +362,6 @@ class COLREGsGym(McGym):
 
         field_map = {
             "effective_depth": "masking/effective_depth",
-            "decision_depth": "masking/decision_depth",
-            "min_search_depth": "masking/min_search_depth",
             "candidate_count": "masking/candidate_actions",
             "safe_action_count": "masking/search_safe_actions",
             "certified_action_count": "masking/certified_actions",
@@ -380,12 +378,6 @@ class COLREGsGym(McGym):
             "fallback_action": "masking/fallback_action",
             "fallback_action_yaw_deg_s": "masking/fallback_action_yaw_deg_s",
             "fallback_allowed_all": "masking/fallback_allowed_all",
-            "enforce_starboard_crossing_side": (
-                "masking/enforce_starboard_crossing_side"
-            ),
-            "require_full_depth_certificate": (
-                "masking/require_full_depth_certificate"
-            ),
         }
         for diagnostics_key, info_key in field_map.items():
             value = diagnostics.get(diagnostics_key)
