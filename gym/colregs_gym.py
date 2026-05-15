@@ -164,6 +164,13 @@ class COLREGsGym(McGym):
         )
         return sim_state
 
+    def _encounter_distance(self):
+        if self.state.encounter_vessel_eta is None or self.state.sim_state is None:
+            return None
+        ego_pos = self.state.sim_state["eta"][:2]
+        enc_pos = self.state.encounter_vessel_eta[:2]
+        return float(np.hypot(ego_pos[0] - enc_pos[0], ego_pos[1] - enc_pos[1]))
+
     def _build_neutral_action_mask(self):
         mask = np.zeros(self.vessel_action.n_actions, dtype=bool)
         yaw_idx = int(np.argmin(np.abs(self.vessel_action.yaw_rate_commands)))
@@ -213,6 +220,7 @@ class COLREGsGym(McGym):
 
         last_tau = np.zeros(3)
         pre_maneuver_was_active = False
+        min_encounter_distance_interval = np.inf
         for _ in range(self.decision_interval):
             pre_maneuver_active = self._pre_maneuver_active()
             pre_maneuver_was_active = pre_maneuver_was_active or pre_maneuver_active
@@ -226,6 +234,12 @@ class COLREGsGym(McGym):
 
             self.state.propagate_encounter(self.dt)
             sim_state = self._sync_runtime_state()
+            encounter_distance = self._encounter_distance()
+            if encounter_distance is not None:
+                min_encounter_distance_interval = min(
+                    min_encounter_distance_interval,
+                    encounter_distance,
+                )
 
             terminated, term_info = self.termination.is_terminated(self.state)
             if terminated:
@@ -274,6 +288,12 @@ class COLREGsGym(McGym):
             self._step_count += 1
 
             self._sync_runtime_state()
+            encounter_distance = self._encounter_distance()
+            if encounter_distance is not None:
+                min_encounter_distance_interval = min(
+                    min_encounter_distance_interval,
+                    encounter_distance,
+                )
             self.state.record()
 
             if terminated or truncated:
@@ -306,6 +326,11 @@ class COLREGsGym(McGym):
             else self.state._cached_mask.sum()
         )
         info["mask_fallback"] = bool(self.state.fallback_used)
+        if np.isfinite(min_encounter_distance_interval):
+            info["masking/min_distance_interval"] = float(
+                min_encounter_distance_interval
+            )
+        self._populate_masking_diagnostics_info(info)
 
         ctrl_sim = self.state.sim_state
         psi_d = self.state._current_heading_cmd
@@ -329,6 +354,65 @@ class COLREGsGym(McGym):
             self.callback.on_episode_end(info, terminated, self.reward)
 
         return obs, reward, terminated, truncated, info
+
+    def _populate_masking_diagnostics_info(self, info):
+        diagnostics = getattr(self.state, "last_mask_diagnostics", {}) or {}
+        if not diagnostics:
+            return
+
+        field_map = {
+            "effective_depth": "masking/effective_depth",
+            "decision_depth": "masking/decision_depth",
+            "min_search_depth": "masking/min_search_depth",
+            "candidate_count": "masking/candidate_actions",
+            "safe_action_count": "masking/search_safe_actions",
+            "certified_action_count": "masking/certified_actions",
+            "best_robustness": "masking/best_robustness",
+            "elapsed_ms": "masking/search_time_ms",
+            "nodes_evaluated": "masking/nodes_evaluated",
+            "nodes_pruned": "masking/nodes_pruned",
+            "certified_before_full_depth_count": (
+                "masking/certified_before_full_depth"
+            ),
+            "allowed_certified_depth_mean": (
+                "masking/allowed_certified_depth_mean"
+            ),
+            "fallback_action": "masking/fallback_action",
+            "fallback_action_yaw_deg_s": "masking/fallback_action_yaw_deg_s",
+            "fallback_allowed_all": "masking/fallback_allowed_all",
+            "enforce_starboard_crossing_side": (
+                "masking/enforce_starboard_crossing_side"
+            ),
+            "require_full_depth_certificate": (
+                "masking/require_full_depth_certificate"
+            ),
+        }
+        for diagnostics_key, info_key in field_map.items():
+            value = diagnostics.get(diagnostics_key)
+            if value is None:
+                continue
+            if isinstance(value, bool):
+                info[info_key] = float(value)
+                continue
+            try:
+                numeric_value = float(value)
+            except (TypeError, ValueError):
+                continue
+            if np.isfinite(numeric_value):
+                info[info_key] = numeric_value
+
+        fallback_mode = diagnostics.get("fallback_mode")
+        if fallback_mode is not None:
+            info["masking/fallback_mode"] = fallback_mode
+
+        predicate_summary = diagnostics.get("predicate_summary", {}) or {}
+        for predicate_name, summary in predicate_summary.items():
+            for stat_name, value in summary.items():
+                if value is None:
+                    continue
+                numeric_value = float(value)
+                if np.isfinite(numeric_value):
+                    info[f"masking/{predicate_name}_{stat_name}"] = numeric_value
 
     def _update_encounter_state(self, robustness):
         self.masking.update_encounter_state(self, robustness)

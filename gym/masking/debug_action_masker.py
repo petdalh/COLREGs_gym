@@ -1,4 +1,5 @@
 import time
+import copy
 from collections import deque
 
 import numpy as np
@@ -47,6 +48,7 @@ class DebugActionMasker:
         self._using_cached_tube = False
         self.last_search_tree = None
         self._debug_node_counter = 0
+        self.last_diagnostics = {}
 
     def configure(self, config=None, vessel_model=None):
         config = dict(config or {})
@@ -88,6 +90,23 @@ class DebugActionMasker:
         self.fallback_robustness_tolerance = float(
             config.get("fallback_robustness_tolerance", 0.5)
         )
+        self.enforce_starboard_crossing_side = bool(
+            config.get("enforce_starboard_crossing_side", True)
+        )
+        self.require_full_depth_certificate = bool(
+            config.get("require_full_depth_certificate", False)
+        )
+        self.fallback_mode = str(config.get("fallback_mode", "starboard_near_best"))
+        valid_fallback_modes = {
+            "starboard_near_best",
+            "robustness_best",
+            "unmasked_on_failure",
+        }
+        if self.fallback_mode not in valid_fallback_modes:
+            raise ValueError(
+                "fallback_mode must be one of "
+                f"{sorted(valid_fallback_modes)}, got {self.fallback_mode!r}."
+            )
         # Heuristic pruning: skip expanding a node's children when its upper
         # robustness bound is below this threshold (default -inf = no pruning).
         self.pruning_threshold = float(config.get("pruning_threshold", -np.inf))
@@ -272,7 +291,10 @@ class DebugActionMasker:
             )
             try:
                 spec = self._get_debug_spec(name, T_start, T_end)
-                robustness = spec.evaluate(partial_tube, trajectory)
+                robustness = spec.evaluate(
+                    copy.copy(partial_tube),
+                    copy.copy(trajectory),
+                )
                 results[name] = {
                     "T_start": sub_T_start,
                     "T_end": sub_T_end,
@@ -302,17 +324,20 @@ class DebugActionMasker:
         mask = np.ones(self.n_actions, dtype=bool)
         is_fallback = False
         self._init_debug_tree()
+        self.last_diagnostics = self._diagnostics_stub("not_evaluated")
 
         if (
             self.spec is None and self._spec_factory is None
         ) or self.ellipsoids_Ab_dict is None:
             self.last_search_tree["skip_reason"] = "missing_spec_or_tube"
+            self.last_diagnostics = self._diagnostics_stub("missing_spec_or_tube")
             return mask, is_fallback
 
         if not within_monitoring_radius(
             encounter_vessel_eta, monitoring_radius, ego_state
         ):
             self.last_search_tree["skip_reason"] = "outside_monitoring_radius"
+            self.last_diagnostics = self._diagnostics_stub("outside_monitoring_radius")
             return mask, is_fallback
 
         # Build the action-hold-aligned time step list for this search.  Stored as an
@@ -322,10 +347,17 @@ class DebugActionMasker:
         effective_depth = min(self.decision_depth, len(self._search_tube_steps))
         if effective_depth == 0:
             self.last_search_tree["skip_reason"] = "no_aligned_tube_steps"
+            self.last_diagnostics = self._diagnostics_stub("no_aligned_tube_steps")
             return mask, is_fallback
 
         mask = np.zeros(self.n_actions, dtype=bool)
         action_robustness = np.full(self.n_actions, np.inf)
+        action_certified_depth = np.full(self.n_actions, np.nan)
+        action_certified_before_full_depth = np.zeros(self.n_actions, dtype=bool)
+        nodes_evaluated = 0
+        nodes_pruned = 0
+        fallback_idx = None
+        fallback_allowed_all = False
         # Sort candidates so larger (more starboard) yaw rates come first.
         candidates = sorted(
             self._candidate_actions(situation),
@@ -360,12 +392,15 @@ class DebugActionMasker:
                 initial_psi_d_offset,
                 self._decode_action(action_idx)[0],
                 self.action_hold_dt,
+                enforce=self.enforce_starboard_crossing_side,
             )
         ]
 
         for first_action in first_action_candidates:
             best_rob = -np.inf  # track best (highest) lower bound seen
             found_safe = False
+            certified_depth = None
+            certified_before_full_depth = False
             cont_candidates = candidates
             # Once at least one safe action exists, tighten pruning to skip
             # subtrees that cannot realistically reach the certification margin.
@@ -409,6 +444,7 @@ class DebugActionMasker:
                     node["psi_d_offset"],
                     yaw_rate_cmd,
                     self.action_hold_dt,
+                    enforce=self.enforce_starboard_crossing_side,
                 ):
                     debug_record["rejected_reason"] = "crossing_side"
                     continue
@@ -443,6 +479,7 @@ class DebugActionMasker:
                 # detection robustness_margin.
                 rob_upper = extract_robustness_upper(robustness)
                 rob_lower = extract_robustness_lower(robustness)
+                nodes_evaluated += 1
                 T_start, T_end = self._get_spec_window(node["depth"])
                 debug_record.update(
                     {
@@ -466,7 +503,15 @@ class DebugActionMasker:
                     min_depth_reached = (
                         node["depth"] + 1 >= self.min_search_depth
                     )
-                    if rob_lower > self.certification_margin and min_depth_reached:
+                    full_depth_reached = node["depth"] + 1 >= effective_depth
+                    required_depth_reached = (
+                        full_depth_reached
+                        if self.require_full_depth_certificate
+                        else min_depth_reached
+                    )
+                    if rob_lower > self.certification_margin and required_depth_reached:
+                        certified_depth = node["depth"] + 1
+                        certified_before_full_depth = certified_depth < effective_depth
                         found_safe = True
                         debug_record["certified_safe"] = True
                         break
@@ -483,6 +528,7 @@ class DebugActionMasker:
                         and np.isfinite(effective_pruning)
                         and rob_upper < effective_pruning
                     ):
+                        nodes_pruned += 1
                         debug_record["pruned"] = True
                         debug_record["rejected_reason"] = "pruning_threshold"
                         continue
@@ -514,6 +560,10 @@ class DebugActionMasker:
             if found_safe:
                 mask[first_action] = True
                 any_safe_found = True
+                action_certified_depth[first_action] = float(certified_depth)
+                action_certified_before_full_depth[first_action] = (
+                    certified_before_full_depth
+                )
                 self.last_search_tree["safe_actions"].append(int(first_action))
 
             action_robustness[first_action] = best_rob
@@ -526,6 +576,31 @@ class DebugActionMasker:
         if not mask.any():
             is_fallback = True
             self.last_search_tree["fallback"] = True
+            if self.fallback_mode == "unmasked_on_failure":
+                mask[first_action_candidates] = True
+                fallback_allowed_all = True
+                print(
+                    "[ActionMask] Fallback after verification: "
+                    "all first-action candidates allowed"
+                )
+                self.last_diagnostics = self._build_diagnostics(
+                    effective_depth=effective_depth,
+                    first_action_candidates=first_action_candidates,
+                    mask=mask,
+                    action_robustness=action_robustness,
+                    action_certified_depth=action_certified_depth,
+                    action_certified_before_full_depth=(
+                        action_certified_before_full_depth
+                    ),
+                    elapsed_s=time.perf_counter() - _t0,
+                    nodes_evaluated=nodes_evaluated,
+                    nodes_pruned=nodes_pruned,
+                    is_fallback=is_fallback,
+                    fallback_idx=fallback_idx,
+                    fallback_allowed_all=fallback_allowed_all,
+                )
+                return mask, is_fallback
+
             candidate_rob = {
                 idx: action_robustness[idx]
                 for idx in first_action_candidates
@@ -542,11 +617,21 @@ class DebugActionMasker:
                         initial_psi_d_offset,
                         yaw_rate_cmd,
                         self.action_hold_dt,
+                        enforce=self.enforce_starboard_crossing_side,
                     ):
                         fallback_candidates.append((float(rob), float(yaw_rate_cmd), idx))
 
                 if fallback_candidates:
-                    if max_rob > 0.0:
+                    if self.fallback_mode == "robustness_best":
+                        _, _, fallback_idx = max(
+                            fallback_candidates,
+                            key=lambda candidate: (
+                                candidate[0],
+                                -abs(candidate[1]),
+                                -candidate[2],
+                            ),
+                        )
+                    elif max_rob > 0.0:
                         near_best = [
                             candidate
                             for candidate in fallback_candidates
@@ -579,19 +664,182 @@ class DebugActionMasker:
                         initial_psi_d_offset,
                         yaw_rate_cmd,
                         self.action_hold_dt,
+                        enforce=self.enforce_starboard_crossing_side,
                     ):
-                        key = (float(yaw_rate_cmd), int(action_idx))
+                        if self.fallback_mode == "robustness_best":
+                            key = (-abs(float(yaw_rate_cmd)), -int(action_idx))
+                        else:
+                            key = (float(yaw_rate_cmd), int(action_idx))
                         if fallback_key is None or key > fallback_key:
                             fallback_key = key
                             fallback_idx = action_idx
                 if fallback_idx is not None:
                     mask[fallback_idx] = True
-                print("[ActionMask] Emergency fallback: strongest non-port command only")
+                fallback_desc = (
+                    "closest-to-neutral candidate"
+                    if self.fallback_mode == "robustness_best"
+                    else "strongest non-port command"
+                )
+                print(f"[ActionMask] Emergency fallback: {fallback_desc} only")
         
+        self.last_diagnostics = self._build_diagnostics(
+            effective_depth=effective_depth,
+            first_action_candidates=first_action_candidates,
+            mask=mask,
+            action_robustness=action_robustness,
+            action_certified_depth=action_certified_depth,
+            action_certified_before_full_depth=action_certified_before_full_depth,
+            elapsed_s=time.perf_counter() - _t0,
+            nodes_evaluated=nodes_evaluated,
+            nodes_pruned=nodes_pruned,
+            is_fallback=is_fallback,
+            fallback_idx=fallback_idx,
+            fallback_allowed_all=fallback_allowed_all,
+        )
         return mask, is_fallback
 
     def _candidate_actions(self, situation):
         return list(range(self.n_actions))
+
+    def _diagnostics_stub(self, skip_reason):
+        return {
+            "active": False,
+            "skip_reason": skip_reason,
+            "fallback_mode": self.fallback_mode,
+            "enforce_starboard_crossing_side": self.enforce_starboard_crossing_side,
+            "require_full_depth_certificate": self.require_full_depth_certificate,
+        }
+
+    def _build_diagnostics(
+        self,
+        effective_depth,
+        first_action_candidates,
+        mask,
+        action_robustness,
+        action_certified_depth,
+        action_certified_before_full_depth,
+        elapsed_s,
+        nodes_evaluated,
+        nodes_pruned,
+        is_fallback,
+        fallback_idx,
+        fallback_allowed_all,
+    ):
+        finite_robustness = [
+            float(action_robustness[idx])
+            for idx in first_action_candidates
+            if np.isfinite(action_robustness[idx])
+        ]
+        certified_depths = [
+            float(action_certified_depth[idx])
+            for idx in first_action_candidates
+            if mask[idx] and np.isfinite(action_certified_depth[idx])
+        ]
+        action_records = []
+        for idx in first_action_candidates:
+            yaw_rate_cmd, surge_accel_cmd = self._decode_action(idx)
+            action_records.append(
+                {
+                    "action": int(idx),
+                    "yaw_rate_cmd_deg_s": float(np.degrees(yaw_rate_cmd)),
+                    "surge_accel_cmd": float(surge_accel_cmd),
+                    "allowed": bool(mask[idx]),
+                    "best_robustness": (
+                        float(action_robustness[idx])
+                        if np.isfinite(action_robustness[idx])
+                        else None
+                    ),
+                    "certified_depth": (
+                        float(action_certified_depth[idx])
+                        if np.isfinite(action_certified_depth[idx])
+                        else None
+                    ),
+                    "certified_before_full_depth": bool(
+                        action_certified_before_full_depth[idx]
+                    ),
+                }
+            )
+
+        fallback_yaw_deg_s = None
+        if fallback_idx is not None:
+            fallback_yaw_deg_s = float(
+                np.degrees(self._decode_action(fallback_idx)[0])
+            )
+
+        return {
+            "active": True,
+            "skip_reason": None,
+            "effective_depth": int(effective_depth),
+            "decision_depth": int(self.decision_depth),
+            "min_search_depth": int(self.min_search_depth),
+            "candidate_count": int(len(first_action_candidates)),
+            "safe_action_count": int(mask.sum()),
+            "certified_action_count": int(np.isfinite(action_certified_depth).sum()),
+            "best_robustness": max(finite_robustness) if finite_robustness else None,
+            "elapsed_ms": float(elapsed_s * 1000.0),
+            "nodes_evaluated": int(nodes_evaluated),
+            "nodes_pruned": int(nodes_pruned),
+            "certified_before_full_depth_count": int(
+                np.sum(action_certified_before_full_depth)
+            ),
+            "allowed_certified_depth_mean": (
+                float(np.mean(certified_depths)) if certified_depths else None
+            ),
+            "fallback": bool(is_fallback),
+            "fallback_mode": self.fallback_mode,
+            "fallback_action": None if fallback_idx is None else int(fallback_idx),
+            "fallback_action_yaw_deg_s": fallback_yaw_deg_s,
+            "fallback_allowed_all": bool(fallback_allowed_all),
+            "enforce_starboard_crossing_side": self.enforce_starboard_crossing_side,
+            "require_full_depth_certificate": self.require_full_depth_certificate,
+            "predicate_summary": self._predicate_summary(),
+            "actions": action_records,
+        }
+
+    def _predicate_summary(self):
+        if not self.last_search_tree:
+            return {}
+
+        values = {
+            "maneuver_verified": {"lower": [], "upper": []},
+            "occupancy_clear": {"lower": [], "upper": []},
+            "collision_possible": {"lower": [], "upper": []},
+        }
+
+        for node in self.last_search_tree.get("nodes", {}).values():
+            maneuver_record = node.get("maneuver_verified")
+            self._append_robustness_values(
+                values["maneuver_verified"],
+                maneuver_record,
+            )
+            for name in ("occupancy_clear", "collision_possible"):
+                self._append_robustness_values(
+                    values[name],
+                    node.get("sub_specs", {}).get(name),
+                )
+
+        summary = {}
+        for name, name_values in values.items():
+            lower = name_values["lower"]
+            upper = name_values["upper"]
+            if not lower and not upper:
+                continue
+            summary[name] = {
+                "lower_min": float(np.min(lower)) if lower else None,
+                "lower_max": float(np.max(lower)) if lower else None,
+                "upper_min": float(np.min(upper)) if upper else None,
+                "upper_max": float(np.max(upper)) if upper else None,
+            }
+        return summary
+
+    @staticmethod
+    def _append_robustness_values(target, record):
+        if not record:
+            return
+        for key in ("lower", "upper"):
+            value = record.get(key)
+            if value is not None and np.isfinite(value):
+                target[key].append(float(value))
 
     @staticmethod
     def _respects_crossing_side(
@@ -600,7 +848,10 @@ class DebugActionMasker:
         yaw_rate_cmd,
         dt,
         tolerance=1e-9,
+        enforce=True,
     ):
+        if not enforce:
+            return True
         if situation != "crossing":
             return True
         next_offset = float(psi_d_offset) + float(yaw_rate_cmd) * float(dt)

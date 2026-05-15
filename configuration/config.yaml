@@ -48,6 +48,9 @@ environment_configuration:
     decision_depth: 3
     certification_margin: 0.0
     fallback_robustness_tolerance: 0.5
+    enforce_starboard_crossing_side: true
+    require_full_depth_certificate: false
+    fallback_mode: starboard_near_best  # starboard_near_best | robustness_best | unmasked_on_failure
     pruning_threshold: -2.0
     use_3dof_dynamics: true      # set true to enable shoeboxpy 3DOF integration
     shoebox_sub_dt: 0.1           # RK4 substep within each sim_dt chunk (s)

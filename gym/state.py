@@ -34,6 +34,7 @@ class State:
         self._current_goal_bearing_dot: float = 0.0
         self._psi_d_offset: float = 0.0
         self.fallback_used: bool = False
+        self.last_mask_diagnostics = {}
 
         self.sim_state = None
         self.in_monitoring_radius = None
@@ -346,6 +347,7 @@ class State:
         self._current_goal_bearing_dot = 0.0
         self._psi_d_offset = 0.0
         self.fallback_used = False
+        self.last_mask_diagnostics = {}
         self.sim_state = None
         self.in_monitoring_radius = None
         self.terminal_reason = None

@@ -78,6 +78,7 @@ class Masking:
             env.state._encounter_active = False
             env.state._active_maneuver_spec = None
             env.state._cached_mask = self._default_mask()
+            env.state.last_mask_diagnostics = {}
         self._action_masker.update_scenario(None, None, env.encounter_scenario)
 
     def update_encounter_state(self, env, robustness):
@@ -113,6 +114,7 @@ class Masking:
         env.state._encounter_active = False
         env.state._active_maneuver_spec = None
         env.state._cached_mask = self._default_mask()
+        env.state.last_mask_diagnostics = {}
         self._action_masker.update_scenario(None, None, env.encounter_scenario)
 
     def action_masks(self, env):
@@ -136,6 +138,7 @@ class Masking:
             env.state._encounter_active = False
             env.state._active_maneuver_spec = None
             env.state._cached_mask = self._default_mask()
+            env.state.last_mask_diagnostics = {}
             self._action_masker.update_scenario(None, None, env.encounter_scenario)
             return constraint_mask
 
@@ -160,4 +163,9 @@ class Masking:
             state=env.state,
         )
         env.state.fallback_used = is_fallback
+        env.state.last_mask_diagnostics = getattr(
+            self._action_masker,
+            "last_diagnostics",
+            {},
+        )
         return mask

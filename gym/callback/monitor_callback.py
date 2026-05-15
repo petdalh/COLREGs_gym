@@ -48,6 +48,41 @@ class ColregsMonitorCallback(BaseCallback):
         self._rolling_mask_allowed = collections.deque(maxlen=10)
         self._rolling_mask_allowed_fraction = collections.deque(maxlen=10)
         self._rolling_fallback_rate = collections.deque(maxlen=10)
+        self._MASK_DIAGNOSTIC_KEYS = [
+            "masking/effective_depth",
+            "masking/decision_depth",
+            "masking/min_search_depth",
+            "masking/candidate_actions",
+            "masking/search_safe_actions",
+            "masking/certified_actions",
+            "masking/best_robustness",
+            "masking/search_time_ms",
+            "masking/nodes_evaluated",
+            "masking/nodes_pruned",
+            "masking/certified_before_full_depth",
+            "masking/allowed_certified_depth_mean",
+            "masking/fallback_action",
+            "masking/fallback_action_yaw_deg_s",
+            "masking/fallback_allowed_all",
+            "masking/enforce_starboard_crossing_side",
+            "masking/require_full_depth_certificate",
+            "masking/min_distance_interval",
+            "masking/maneuver_verified_lower_min",
+            "masking/maneuver_verified_lower_max",
+            "masking/maneuver_verified_upper_min",
+            "masking/maneuver_verified_upper_max",
+            "masking/occupancy_clear_lower_min",
+            "masking/occupancy_clear_lower_max",
+            "masking/occupancy_clear_upper_min",
+            "masking/occupancy_clear_upper_max",
+            "masking/collision_possible_lower_min",
+            "masking/collision_possible_lower_max",
+            "masking/collision_possible_upper_min",
+            "masking/collision_possible_upper_max",
+        ]
+        self._rolling_mask_diagnostic_means = {
+            k: collections.deque(maxlen=10) for k in self._MASK_DIAGNOSTIC_KEYS
+        }
 
         self._CONTROL_KEYS = [
             "control/heading_deg",
@@ -73,6 +108,7 @@ class ColregsMonitorCallback(BaseCallback):
         self._ep_mask_allowed = []
         self._ep_mask_allowed_fraction = []
         self._ep_fallback_flags = []
+        self._ep_mask_diagnostic_values = []
         self._ep_control_sums = []
         self._ep_control_steps = []
         self._ep_wrong_side_crossing = []
@@ -113,6 +149,9 @@ class ColregsMonitorCallback(BaseCallback):
         self._ep_mask_allowed = [[] for _ in range(n_envs)]
         self._ep_mask_allowed_fraction = [[] for _ in range(n_envs)]
         self._ep_fallback_flags = [[] for _ in range(n_envs)]
+        self._ep_mask_diagnostic_values = [
+            {k: [] for k in self._MASK_DIAGNOSTIC_KEYS} for _ in range(n_envs)
+        ]
         self._ep_control_sums = [
             {k: 0.0 for k in self._CONTROL_KEYS} for _ in range(n_envs)
         ]
@@ -165,6 +204,12 @@ class ColregsMonitorCallback(BaseCallback):
                         allowed_count / self._total_actions
                     )
                 self._ep_fallback_flags[env_idx].append(int(info["mask_fallback"]))
+                for key in self._MASK_DIAGNOSTIC_KEYS:
+                    val = info.get(key)
+                    if val is not None:
+                        val = float(val)
+                        if np.isfinite(val):
+                            self._ep_mask_diagnostic_values[env_idx][key].append(val)
 
             if "episode" in info:
                 self.episode_count += 1
@@ -214,9 +259,18 @@ class ColregsMonitorCallback(BaseCallback):
                     self._rolling_fallback_rate.append(
                         float(np.mean(self._ep_fallback_flags[env_idx]))
                     )
+                for key in self._MASK_DIAGNOSTIC_KEYS:
+                    values = self._ep_mask_diagnostic_values[env_idx][key]
+                    if values:
+                        self._rolling_mask_diagnostic_means[key].append(
+                            float(np.mean(values))
+                        )
                 self._ep_mask_allowed[env_idx] = []
                 self._ep_mask_allowed_fraction[env_idx] = []
                 self._ep_fallback_flags[env_idx] = []
+                self._ep_mask_diagnostic_values[env_idx] = {
+                    k: [] for k in self._MASK_DIAGNOSTIC_KEYS
+                }
 
                 if self.episode_count % 1 == 0:
                     avg_r = np.mean(self.episode_rewards[-10:])
@@ -244,6 +298,15 @@ class ColregsMonitorCallback(BaseCallback):
                             masking_log["masking/fallback_rate"] = float(
                                 np.mean(self._rolling_fallback_rate)
                             )
+                        masking_log.update(
+                            {
+                                key: float(np.mean(values))
+                                for key, values in (
+                                    self._rolling_mask_diagnostic_means.items()
+                                )
+                                if values
+                            }
+                        )
                         event_log = {
                             "events/collisions_cumulative": self._cumulative_collisions,
                             "events/goals_cumulative": self._cumulative_goals,
