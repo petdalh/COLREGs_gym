@@ -67,6 +67,9 @@ environment_configuration:
     encounter_type: crossing
     separation: 30.0
     target_speed: 0.2
+    target_speeds: [0.08, 0.2, 0.4]
+    time_to_conflict_s: 120.0
+    target_cross_track_noise_m: 0.0
     goal_ahead_distance: 50.0
     collision_radius: 2.0
     simtime: 500.0

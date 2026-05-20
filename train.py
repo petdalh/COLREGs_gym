@@ -23,16 +23,15 @@ except ImportError as exc:
 
 def configure_monitoring(env, monitoring_cfg):
     try:
-        from gym.utils.reachable_sets import preload_reachable_sets, select_reachable_set
+        from gym.utils.reachable_sets import preload_reachable_sets
     except ImportError:
         return False
 
     spec = create_spec("colregs", "crossing_detection")
     ellipsoids = preload_reachable_sets()
-    tube = select_reachable_set(ellipsoids, env.encounter_scenario.target_speed)
     env.configure_monitoring(
         spec,
-        tube,
+        ellipsoids,
         sampling_rate=monitoring_cfg.get("robustness_sampling_rate", 5),
     )
     
