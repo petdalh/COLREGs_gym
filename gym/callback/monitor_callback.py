@@ -366,6 +366,8 @@ class ColregsMonitorCallback(BaseCallback):
             goal=self.eval_env.goal[:2],
             dt=self.eval_env.dt,
             episode_num=episode_num,
+            collision_radius=self.eval_env.encounter_scenario.collision_radius,
+            obstacle_speed_mps=self.eval_env.state.encounter_speed,
             save_path=os.path.join(self.plot_dir, f"traj_{tag}.png"),
         )
 

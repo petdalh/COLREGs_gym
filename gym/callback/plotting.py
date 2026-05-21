@@ -106,6 +106,7 @@ def plot_episode_trajectory(
     collision_radius: float = 0.0,
     save_path: str | None = None,
     ego_speed_traj: list | None = None,
+    obstacle_speed_mps: float | None = None,
 ):
     # ── Figure (single-column width ≈ 3.5 in for two-column papers) ──
     fig, ax = plt.subplots(figsize=(3.6, 3.6))
@@ -164,9 +165,12 @@ def plot_episode_trajectory(
 
     # ── Obstacle trajectory ──────────────────────────────────────────
     if len(enc_arr) > 0:
+        obstacle_label = "Obstacle vessel"
+        if obstacle_speed_mps is not None and np.isfinite(obstacle_speed_mps):
+            obstacle_label = rf"Obstacle vessel ($v_o={obstacle_speed_mps:.2f}$ m/s)"
         ax.plot(
             enc_arr[:, 1], enc_arr[:, 0],
-            color=_OBS_CLR, linewidth=1.2, label="Obstacle vessel",
+            color=_OBS_CLR, linewidth=1.2, label=obstacle_label,
         )
 
     # ── Start / end markers ──────────────────────────────────────────

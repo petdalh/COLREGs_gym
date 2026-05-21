@@ -19,7 +19,7 @@ export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 
-python train.py --config configuration/config.yaml
+python train.py --config configuration/config_multispeed.yaml
 
 # Run:
 #  - sbatch {job_name}.slurm

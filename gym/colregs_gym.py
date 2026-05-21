@@ -10,6 +10,7 @@ from gym.termination import Termination
 from gym.truncation import Truncation
 from gym.utils.config import resolve_config
 from gym.utils.geometry import within_monitoring_radius, wrap_angle
+from gym.utils.reachable_sets import select_reachable_set
 
 from gymnasium import spaces
 
@@ -115,6 +116,7 @@ class COLREGsGym(McGym):
         self.spec = None
         self.maneuver_spec_factory = None
         self.ellipsoids_Ab_dict = None
+        self._reachable_set_bank = None
         self.reward = ColregsReward(config=reward_cfg)
         self.masking = Masking(
             n_actions=self.vessel_action.n_actions,
@@ -191,17 +193,33 @@ class COLREGsGym(McGym):
         encounter_type="crossing",
         separation=30.0,
         target_speed=0.3,
+        target_speeds=None,
+        time_to_conflict_s=None,
+        ego_reference_speed=None,
+        heading_noise_deg=5.0,
+        encounter_position_noise_m=2.0,
+        target_cross_track_noise_m=0.0,
         goal_ahead_distance=25.0,
         collision_radius=1.0,
         simtime=150.0,
         masking_configuration=None,
     ):
+        if ego_reference_speed is None and time_to_conflict_s is not None:
+            ego_reference_speed = (
+                self.state.initial_surge_command_fraction * self.ego_vessel_model.v_max
+            )
         self.encounter_scenario.set_encounter(
             start_position=start_position,
             wave_conditions=wave_conditions,
             encounter_type=encounter_type,
             separation=separation,
             target_speed=target_speed,
+            target_speeds=target_speeds,
+            time_to_conflict_s=time_to_conflict_s,
+            ego_reference_speed=ego_reference_speed,
+            heading_noise_deg=heading_noise_deg,
+            encounter_position_noise_m=encounter_position_noise_m,
+            target_cross_track_noise_m=target_cross_track_noise_m,
             goal_ahead_distance=goal_ahead_distance,
             collision_radius=collision_radius,
             simtime=simtime,
@@ -209,6 +227,7 @@ class COLREGsGym(McGym):
         )
         self.masking.configure_for_scenario(self.encounter_scenario)
         self.encounter_scenario.apply(self)
+        self._refresh_monitoring_for_current_speed()
 
     def step(self, action):
         terminated = False
@@ -426,11 +445,51 @@ class COLREGsGym(McGym):
         if sampling_rate is None:
             sampling_rate = self.robustness.sampling_rate
         self.spec = spec
-        self.ellipsoids_Ab_dict = ellipsoids_Ab_dict
-        self.encounter_scenario.configure_monitoring_cache(ellipsoids_Ab_dict)
         self.robustness.spec = spec
-        self.robustness.ellipsoids_Ab_dict = ellipsoids_Ab_dict
         self.robustness.sampling_rate = sampling_rate
+        self._reachable_set_bank = (
+            ellipsoids_Ab_dict
+            if self._is_reachable_set_bank(ellipsoids_Ab_dict)
+            else None
+        )
+        self.ellipsoids_Ab_dict = (
+            self._select_reachable_set_for_current_speed()
+            if self._reachable_set_bank is not None
+            else ellipsoids_Ab_dict
+        )
+        self.encounter_scenario.configure_monitoring_cache(self.ellipsoids_Ab_dict)
+        self.robustness.ellipsoids_Ab_dict = self.ellipsoids_Ab_dict
+        if self.maneuver_spec_factory is not None:
+            self.configure_maneuver_monitoring(self.maneuver_spec_factory)
+
+    @staticmethod
+    def _is_reachable_set_bank(ellipsoids_Ab_dict):
+        return isinstance(ellipsoids_Ab_dict, (list, tuple))
+
+    def _select_reachable_set_for_current_speed(self):
+        if self._reachable_set_bank is None:
+            return self.ellipsoids_Ab_dict
+        return select_reachable_set(
+            self._reachable_set_bank,
+            self.encounter_scenario.target_speed,
+        )
+
+    def _refresh_monitoring_for_current_speed(self):
+        if self._reachable_set_bank is None:
+            return
+
+        self.ellipsoids_Ab_dict = self._select_reachable_set_for_current_speed()
+        self.encounter_scenario.configure_monitoring_cache(self.ellipsoids_Ab_dict)
+        self.robustness.ellipsoids_Ab_dict = self.ellipsoids_Ab_dict
+        if self.maneuver_spec_factory is not None:
+            self.configure_maneuver_monitoring(self.maneuver_spec_factory)
+        if self.state._active_maneuver_spec is not None:
+            self.masking._action_masker.update_scenario(
+                self.state._active_maneuver_spec,
+                self.ellipsoids_Ab_dict,
+                self.encounter_scenario,
+                spec_factory=self.maneuver_spec_factory,
+            )
 
     def _check_termination(self, boat_pos):
         terminated, truncated, info = super()._check_termination(boat_pos)
@@ -472,6 +531,7 @@ class COLREGsGym(McGym):
             self._rng = np.random.default_rng(seed)
 
         self.encounter_scenario.reset(self.state)
+        self._refresh_monitoring_for_current_speed()
 
         self._sync_runtime_state()
         self._step_count = 0

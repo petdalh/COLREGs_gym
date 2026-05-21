@@ -107,6 +107,7 @@ class DebugActionMasker:
                 "fallback_mode must be one of "
                 f"{sorted(valid_fallback_modes)}, got {self.fallback_mode!r}."
             )
+        self.pruning_enabled = bool(config.get("pruning_enabled", True))
         # Heuristic pruning: skip expanding a node's children when its upper
         # robustness bound is below this threshold (default -inf = no pruning).
         self.pruning_threshold = float(config.get("pruning_threshold", -np.inf))
@@ -404,11 +405,13 @@ class DebugActionMasker:
             cont_candidates = candidates
             # Once at least one safe action exists, tighten pruning to skip
             # subtrees that cannot realistically reach the certification margin.
-            effective_pruning = (
-                max(self.pruning_threshold, self.certification_margin - 0.5)
-                if any_safe_found
-                else self.pruning_threshold
-            )
+            effective_pruning = -np.inf
+            if self.pruning_enabled:
+                effective_pruning = (
+                    max(self.pruning_threshold, self.certification_margin - 0.5)
+                    if any_safe_found
+                    else self.pruning_threshold
+                )
 
             root_node_id = self._new_debug_node(
                 parent_id=None,
@@ -477,7 +480,6 @@ class DebugActionMasker:
                 # Use lower bound (worst-case obstacle realisation) to certify
                 # robust safety; certification_margin is independent of the
                 # detection robustness_margin.
-                rob_upper = extract_robustness_upper(robustness)
                 rob_lower = extract_robustness_lower(robustness)
                 nodes_evaluated += 1
                 T_start, T_end = self._get_spec_window(node["depth"])
@@ -517,16 +519,13 @@ class DebugActionMasker:
                         break
                     if rob_lower > self.certification_margin:
                         debug_record["blocked_by_min_search_depth"] = True
-                    # Heuristic pruning: if this node's upper bound is so far
-                    # below the certification margin that recovery is unlikely,
-                    # skip expanding its children.  pruning_threshold defaults
-                    # to -inf (disabled); effective_pruning may be tightened
-                    # dynamically once a safe action has already been found.
+                    # Heuristic pruning uses the time-0 lower bound for this
+                    # partial maneuver. Future-looking PAC-STL traces include
+                    # shifted/padded entries, so aggregating across the trace is
+                    # not a meaningful pruning signal.
                     if (
-                        rob_lower <= self.certification_margin
-                        and rob_upper is not None
-                        and np.isfinite(effective_pruning)
-                        and rob_upper < effective_pruning
+                        np.isfinite(effective_pruning)
+                        and rob_lower < effective_pruning
                     ):
                         nodes_pruned += 1
                         debug_record["pruned"] = True

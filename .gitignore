@@ -15,3 +15,5 @@ top_level_tests/
 configuration/*
 !configuration/config.yaml
 !configuration/config_min2_depth*.yaml
+!configuration/config_multispeed.yaml
+tests/

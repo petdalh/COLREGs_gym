@@ -1,7 +1,7 @@
 wandb_configuration:
-  project: "idun-test"      
-  run_name: test_extra_debug
-  group: null                   
+  project: "colregs-ppo"      
+  run_name: multispeed_baseline
+  group: null
   enabled: true
 
 training_configuration:
@@ -14,13 +14,9 @@ training_configuration:
   tensorboard_log: logs/colregs_ppo
   plot_dir: plots
   plot_every_episodes: 50
-  num_envs: null                 # null -> SLURM_CPUS_PER_TASK if set, otherwise 1
-  pin_memory: false              # CPU training; only relevant for GPU data loading
-  print_episode_summary: false   # avoids noisy interleaved Slurm logs with subprocess envs
-  vec_env_start_method: forkserver
   policy_net_arch: [128, 128]
   n_steps: 512
-  batch_size: 256
+  batch_size: 64
   learning_rate: 3.0e-4
 
 environment_configuration:
@@ -42,21 +38,19 @@ environment_configuration:
     surge_accel_commands: [0.0]
 
   masking_configuration:
-    debug_action_masker: true
+    debug_action_masker: false
     sim_dt: 0.5
     min_search_depth: 2
     decision_depth: 2
     certification_margin: 3.0
     fallback_robustness_tolerance: 0.5
-    enforce_starboard_crossing_side: true
-    require_full_depth_certificate: false
-    fallback_mode: starboard_near_best  # starboard_near_best | robustness_best | unmasked_on_failure
+    pruning_enabled: false
     pruning_threshold: -2.0
     use_3dof_dynamics: true      # set true to enable shoeboxpy 3DOF integration
     shoebox_sub_dt: 0.1           # RK4 substep within each sim_dt chunk (s)
-    # CSAD parameters (from McHorcrux csad.json).
+    # CSAD parameters (from McHorcrux csad.json, freq index 41).
     # alpha/beta are back-calculated so shoebox's MA and D match CSAD derivatives:
-    #   m_sb = rho*L*B*T = 156.04 kg,  Izz_sb = 89.00 kg·m²
+    #   m_sb = rho*L*B*T = 156.04 kg,  Izz_sb = 89.00 kg*m^2
     shoebox_L: 2.578
     shoebox_B: 0.444
     shoebox_T: 0.133
@@ -74,13 +68,16 @@ environment_configuration:
     encounter_type: crossing
     separation: 30.0
     target_speed: 0.2
+    target_speeds: [0.08, 0.15, 0.2]
+    time_to_conflict_s: 120.0
+    target_cross_track_noise_m: 0.0
     goal_ahead_distance: 50.0
     collision_radius: 2.0
     simtime: 500.0
     maneuver_horizon: 10.0
 
   monitoring_configuration:
-    masking_enabled: true
+    masking_enabled: false
     monitoring_radius: 40.0
     monitoring_radius_safety_factor: 4.0
     robustness_margin: 40.0
@@ -128,7 +125,7 @@ environment_configuration:
       final_approach_euclidean_dist_coeff: 0.0   # c5 (set negative to enable)
       final_approach_distance_coeff:       1.0   # c6
       final_approach_linearization_coeff:  0.0   # c7 (set positive to enable)
-      timestep_normalization:             5 
+      timestep_normalization:             5
 
     reward_lateral_deviation:
       is_enabled: true
