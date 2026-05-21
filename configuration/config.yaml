@@ -21,14 +21,15 @@ training_configuration:
 
 environment_configuration:
   controller_type: mrac   # backstepping | mrac
+  dynamics_backend: shoebox   # mchorcrux | shoebox
   dt: 0.25
   grid_width: 25.0
   grid_height: 62.0
   decision_interval: 20
   sim_dt: 0.25
-  initial_surge_command_fraction: 0.5
+  initial_surge_command_fraction: 0.9
   min_surge_command_mps: 0.1
-  pre_maneuver_duration_s: 5.0
+  pre_maneuver_duration_s: 0.0
 
   action_constraints:
     speed_floor_enabled: true
@@ -67,7 +68,7 @@ environment_configuration:
     encounter_type: crossing
     separation: 30.0
     target_speed: 0.2
-    target_speeds: [0.08, 0.2, 0.4]
+    target_speeds: [0.08, 0.15, 0.2]
     time_to_conflict_s: 120.0
     target_cross_track_noise_m: 0.0
     goal_ahead_distance: 50.0

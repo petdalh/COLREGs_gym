@@ -15,6 +15,7 @@ from gym.utils.reachable_sets import select_reachable_set
 from gymnasium import spaces
 
 from mchorcrux.numpy_core.gym.mc_gym_csad_numpy import McGym
+from mcsimpy.utils import three2sixDOF
 
 import numpy as np
 
@@ -89,6 +90,7 @@ class COLREGsGym(McGym):
         )
 
         controller_type = env_cfg.get("controller_type", "backstepping")
+        self._dynamics_backend = env_cfg.get("dynamics_backend", "mchorcrux")
 
         super().__init__(
             dt=dt, grid_width=grid_width, grid_height=grid_height, **kwargs
@@ -153,8 +155,38 @@ class COLREGsGym(McGym):
         self.pre_maneuver_duration_s = float(
             env_cfg.get("pre_maneuver_duration_s", 0.0)
         )
+        self._reference_shoebox = None
+        self._reference_shoebox_sub_dt = float(masking_cfg.get("shoebox_sub_dt", 0.1))
+        if self._dynamics_backend == "shoebox":
+            self._init_reference_shoebox(masking_cfg)
+        elif self._dynamics_backend != "mchorcrux":
+            raise ValueError(
+                "Unsupported dynamics_backend="
+                f"{self._dynamics_backend!r}; expected 'mchorcrux' or 'shoebox'."
+            )
         self._neutral_action_mask = self._build_neutral_action_mask()
         self._step_count = 0
+
+    def _init_reference_shoebox(self, config):
+        try:
+            from shoeboxpy.model3dof import Shoebox
+        except ImportError as exc:
+            raise RuntimeError(
+                "shoeboxpy is required when dynamics_backend: shoebox"
+            ) from exc
+
+        self._reference_shoebox = Shoebox(
+            L=float(config.get("shoebox_L", 2.578)),
+            B=float(config.get("shoebox_B", 0.444)),
+            T=float(config.get("shoebox_T", 0.133)),
+            rho=float(config.get("shoebox_rho", 1025.0)),
+            alpha_u=float(config.get("shoebox_alpha_u", 0.11009)),
+            alpha_v=float(config.get("shoebox_alpha_v", 0.86267)),
+            alpha_r=float(config.get("shoebox_alpha_r", 0.58680)),
+            beta_u=float(config.get("shoebox_beta_u", 0.30137)),
+            beta_v=float(config.get("shoebox_beta_v", 2.36154)),
+            beta_r=float(config.get("shoebox_beta_r", 2.84762)),
+        )
 
     def _sync_runtime_state(self):
         sim_state = self.get_state()
@@ -165,6 +197,145 @@ class COLREGsGym(McGym):
             sim_state,
         )
         return sim_state
+
+    def _initial_surge_speed_mps(self):
+        return float(
+            np.clip(
+                self.state.initial_surge_command_fraction * self.ego_vessel_model.v_max,
+                self.state.min_surge_command_mps,
+                self.ego_vessel_model.v_max,
+            )
+        )
+
+    def _set_vessel_surge_speed(self, surge_speed):
+        nu = np.asarray(self.vessel.get_nu(), dtype=float).copy()
+        nu[0] = float(surge_speed)
+        self.vessel.set_nu(nu)
+
+    def _steady_surge_force(self, surge_speed):
+        damping = getattr(self.vessel, "_D", None)
+        if damping is None:
+            return 0.0
+        damping = np.asarray(damping, dtype=float)
+        if damping.ndim != 2 or damping.shape[0] == 0 or damping.shape[1] == 0:
+            return 0.0
+        return float(damping[0, 0] * float(surge_speed))
+
+    def _sync_observer_to_vessel(self):
+        observer = getattr(self, "_observer", None)
+        if observer is None:
+            return
+
+        sim_state = self.state.sim_state
+        eta = np.asarray(sim_state["eta"], dtype=float)
+        nu = np.asarray(sim_state["nu"][:3], dtype=float)
+        eta_3dof = np.array([eta[0], eta[1], eta[-1]], dtype=float)
+
+        observer._x_hat[:] = 0.0
+        observer._x_hat[6:9] = eta_3dof
+        observer._x_hat[12:15] = nu
+        observer._y_hat[:] = eta_3dof
+
+    def _warm_start_controller_for_reset(self):
+        if not hasattr(self._controller, "warm_start"):
+            return
+        psi_d = self.state._current_heading_cmd
+        u_d = self.state._current_surge_cmd
+        if psi_d is None or u_d is None:
+            return
+        self._controller.warm_start(
+            psi_d=psi_d,
+            u_d=u_d,
+            surge_feedforward=self._steady_surge_force(u_d),
+        )
+
+    def _initialize_reset_surge_state(self):
+        surge_speed = self._initial_surge_speed_mps()
+        self._set_vessel_surge_speed(surge_speed)
+        self._sync_runtime_state()
+        self._sync_observer_to_vessel()
+        self._sync_reference_shoebox_from_state(
+            psi_d=self.state._current_heading_cmd
+        )
+        self._warm_start_controller_for_reset()
+
+    def _sync_reference_shoebox_from_state(self, psi_d=None):
+        if self._reference_shoebox is None:
+            return
+
+        sim_state = self.state.sim_state
+        eta = np.asarray(sim_state["eta"], dtype=float)
+        nu = np.asarray(sim_state["nu"][:3], dtype=float)
+        sb = self._reference_shoebox
+        sb.eta[0] = float(eta[0])
+        sb.eta[1] = float(eta[1])
+        sb.eta[2] = float(eta[-1] if psi_d is None else psi_d)
+        sb.nu[0] = float(nu[0])
+        sb.nu[1] = float(nu[1])
+        sb.nu[2] = float(nu[2])
+
+    def _reference_shoebox_force_from_action(
+        self, nu, surge_accel_cmd, yaw_rate_cmd, sub_dt
+    ):
+        u, v, r = nu
+        sb = self._reference_shoebox
+        cnu0 = -(sb.m + sb.MA[1, 1]) * v * r
+        cnu1 = (sb.m + sb.MA[0, 0]) * u * r
+        Dnu0 = sb.D[0, 0] * u
+        Dnu1 = sb.D[1, 1] * v
+        Dnu2 = sb.D[2, 2] * r
+        r_dot_des = (yaw_rate_cmd - r) / sub_dt
+        tau_X = sb.M_eff[0, 0] * surge_accel_cmd + Dnu0 + cnu0
+        tau_Y = Dnu1 + cnu1
+        tau_N = sb.M_eff[2, 2] * r_dot_des + Dnu2
+        return np.array([tau_X, tau_Y, tau_N], dtype=float)
+
+    def _set_vessel_3dof_state(self, eta_3dof, nu_3dof):
+        self.vessel.set_eta(three2sixDOF(np.asarray(eta_3dof, dtype=float)))
+        self.vessel.set_nu(three2sixDOF(np.asarray(nu_3dof, dtype=float)))
+
+    def _step_reference_shoebox(
+        self, psi_d, surge_accel_cmd, yaw_rate_cmd, dt
+    ):
+        self._sync_reference_shoebox_from_state(psi_d=psi_d)
+        sb = self._reference_shoebox
+        last_tau = np.zeros(3)
+        n_sub = max(1, round(float(dt) / self._reference_shoebox_sub_dt))
+        sub_dt = float(dt) / n_sub
+
+        u_start = float(sb.nu[0])
+        u_target = float(
+            np.clip(
+                u_start + float(surge_accel_cmd) * float(dt),
+                self.state.min_surge_command_mps,
+                self.ego_vessel_model.v_max,
+            )
+        )
+        u_dot_eff = (u_target - u_start) / float(dt) if dt > 0.0 else 0.0
+
+        for _ in range(n_sub):
+            last_tau = self._reference_shoebox_force_from_action(
+                sb.nu,
+                u_dot_eff,
+                float(yaw_rate_cmd),
+                sub_dt,
+            )
+            sb.step(tau=last_tau, dt=sub_dt)
+            sb.nu[0] = float(
+                np.clip(
+                    sb.nu[0],
+                    self.state.min_surge_command_mps,
+                    self.ego_vessel_model.v_max,
+                )
+            )
+
+        self.curr_sim_time += float(dt)
+        self._set_vessel_3dof_state(sb.eta, sb.nu)
+        self._sync_runtime_state()
+        self._sync_observer_to_vessel()
+        boat_pos = np.array([sb.eta[0], sb.eta[1], sb.eta[2]], dtype=float)
+        terminated, truncated, info = self._check_termination(boat_pos)
+        return last_tau, terminated, truncated, info
 
     def _build_neutral_action_mask(self):
         mask = np.zeros(self.vessel_action.n_actions, dtype=bool)
@@ -272,24 +443,33 @@ class COLREGsGym(McGym):
             #         sim_state, self._controller, psi_d, u_d, False
             #     )
             # last_tau = tau
-            if self._controller_type == "mrac":
-                tau = self.vessel_action.compute(
-                    self.get_observed_state(), self._controller, psi_d, u_d, False
-                )
-            else:
-                tau = self.vessel_action.compute_backstepping(
-                    self.get_observed_state(),
-                    self._controller,
+            if self._dynamics_backend == "shoebox":
+                last_tau, terminated, truncated, info = self._step_reference_shoebox(
                     psi_d,
-                    u_d,
-                    psi_d_dot,
-                    psi_d_ddot,
-                    u_d_dot,
-                    False,
+                    surge_accel_cmd,
+                    yaw_rate_cmd,
+                    self.dt,
                 )
-            last_tau = tau
-            self.state.set_current_tau(tau)
-            _, _, terminated, truncated, info = super().step(tau)
+                self.state.set_current_tau(last_tau)
+            else:
+                if self._controller_type == "mrac":
+                    tau = self.vessel_action.compute(
+                        self.get_observed_state(), self._controller, psi_d, u_d, False
+                    )
+                else:
+                    tau = self.vessel_action.compute_backstepping(
+                        self.get_observed_state(),
+                        self._controller,
+                        psi_d,
+                        u_d,
+                        psi_d_dot,
+                        psi_d_ddot,
+                        u_d_dot,
+                        False,
+                    )
+                last_tau = tau
+                self.state.set_current_tau(last_tau)
+                _, _, terminated, truncated, info = super().step(tau)
             self._step_count += 1
 
             self._sync_runtime_state()
@@ -430,6 +610,7 @@ class COLREGsGym(McGym):
         return False, False, {}
 
     def reset(self, seed=None, options=None):
+        self.initial_surge_speed_mps = self._initial_surge_speed_mps()
         obs, info = super().reset(seed=seed, options=options)
         self.state.reset()
         self.reward.reset()
@@ -463,6 +644,7 @@ class COLREGsGym(McGym):
             self._controller.reset()
         self._episode_reward = 0.0
         self.state.initialize_command_references(self.state.sim_state)
+        self._initialize_reset_surge_state()
         self.state.record()
 
         return self._obs(), {}
