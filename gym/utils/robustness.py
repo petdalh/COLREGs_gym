@@ -13,6 +13,13 @@ def _extract_robustness_bound(robustness, bound: str) -> float:
     if hasattr(robustness, attr):
         return float(getattr(robustness, attr))
 
+    if (
+        isinstance(robustness, tuple)
+        and len(robustness) == 2
+        and all(np.isscalar(value) for value in robustness)
+    ):
+        return float(robustness[1 if bound == "u" else 0])
+
     if hasattr(robustness, "__getitem__"):
         try:
             if len(robustness) > 0:
@@ -63,6 +70,13 @@ def extract_robustness_lower(robustness) -> float:
     # Direct interval object
     if hasattr(robustness, "l"):
         return float(robustness.l)
+
+    if (
+        isinstance(robustness, tuple)
+        and len(robustness) == 2
+        and all(np.isscalar(value) for value in robustness)
+    ):
+        return float(robustness[0])
 
     # Nested trace format: ([[t0, rob0], [t1, rob1], ...], ...)
     if hasattr(robustness, "__getitem__"):

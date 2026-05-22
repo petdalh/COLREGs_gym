@@ -1,5 +1,6 @@
 import numpy as np
 from pacstl.common.interfaces import PACReachableSet
+from gym.utils.istl import ISTL_SEMANTICS, normalize_stl_semantics
 
 
 class EncounterScenario:
@@ -37,6 +38,7 @@ class EncounterScenario:
         self.ellipsoids_Ab_dict = None
         self.reachable_tube = {}
         self.tube_time_steps = []
+        self.stl_semantics = "pacstl"
         self._rng = np.random.default_rng(seed)
 
 
@@ -191,10 +193,23 @@ class EncounterScenario:
         self._encounter_init = np.array([t_n, t_e, np.deg2rad(t_psi_deg)])
         self.goal = (goal_n, goal_e, 1.0)
 
-    def configure_monitoring_cache(self, ellipsoids_Ab_dict):
+    def configure_monitoring_cache(
+        self,
+        ellipsoids_Ab_dict,
+        time_steps=None,
+        stl_semantics="pacstl",
+    ):
+        self.stl_semantics = normalize_stl_semantics(stl_semantics)
         self.ellipsoids_Ab_dict = ellipsoids_Ab_dict
 
-        if ellipsoids_Ab_dict:
+        if self.stl_semantics == ISTL_SEMANTICS:
+            self.reachable_tube = {}
+            self.tube_time_steps = list(time_steps or [])
+            print(
+                f"[I-STL] Configured interval trajectory monitoring with "
+                f"{len(self.tube_time_steps)} steps: {self.tube_time_steps}"
+            )
+        elif ellipsoids_Ab_dict:
             self.tube_time_steps = sorted(ellipsoids_Ab_dict.keys())
             self.reachable_tube = {
                 time_step: PACReachableSet(

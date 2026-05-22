@@ -21,7 +21,7 @@ class Termination:
 
         # max_pos = max(env.grid_width, env.grid_height) * 4
         max_width = env.grid_width * 4
-        max_height = env.grid_height + 1
+        max_height = env.grid_height - 5
         if np.abs(boat_pos[0]) > max_height or np.abs(boat_pos[1]) > max_width:
             print(
                 f"[Termination] Vessel far outside grid: pos=({boat_pos[0]:.1f}, {boat_pos[1]:.1f})"

@@ -6,6 +6,8 @@ import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
 from matplotlib.colors import Normalize
 
+from gym.utils.robustness import extract_robustness_lower, extract_robustness_upper
+
 # ── Publication style ────────────────────────────────────────────────
 # Use Computer Modern (LaTeX default) so figures match paper body text.
 # Falls back gracefully if CM isn't installed.
@@ -107,6 +109,9 @@ def plot_episode_trajectory(
     save_path: str | None = None,
     ego_speed_traj: list | None = None,
     obstacle_speed_mps: float | None = None,
+    terminal_reason: str | None = None,
+    final_goal_distance: float | None = None,
+    final_encounter_distance: float | None = None,
 ):
     # ── Figure (single-column width ≈ 3.5 in for two-column papers) ──
     fig, ax = plt.subplots(figsize=(3.6, 3.6))
@@ -226,6 +231,18 @@ def plot_episode_trajectory(
             )
             ax.add_patch(circle)
 
+        final_circle = plt.Circle(
+            (enc_arr[-1, 1], enc_arr[-1, 0]),
+            radius=collision_radius,
+            color=_OBS_CLR,
+            fill=False,
+            linewidth=0.8,
+            linestyle="-",
+            alpha=0.75,
+            zorder=4,
+        )
+        ax.add_patch(final_circle)
+
     # ── Time annotations ─────────────────────────────────────────────
     for idx in ego_dot_idx:
         ax.annotate(
@@ -255,7 +272,17 @@ def plot_episode_trajectory(
     # ── Axis labels & legend ─────────────────────────────────────────
     ax.set_xlabel("East (m)")
     ax.set_ylabel("North (m)")
-    ax.set_title(f"Episode {episode_num}", fontweight="medium", pad=6)
+    title_parts = [f"Episode {episode_num}"]
+    if terminal_reason:
+        title_parts.append(str(terminal_reason))
+    distance_parts = []
+    if final_goal_distance is not None and np.isfinite(final_goal_distance):
+        distance_parts.append(f"d_goal={final_goal_distance:.1f} m")
+    if final_encounter_distance is not None and np.isfinite(final_encounter_distance):
+        distance_parts.append(f"d_enc={final_encounter_distance:.1f} m")
+    if distance_parts:
+        title_parts.append(", ".join(distance_parts))
+    ax.set_title(" | ".join(title_parts), fontweight="medium", pad=6)
     ax.set_aspect("equal")
     ax.tick_params(top=True, right=True, which="both")
 
@@ -402,13 +429,13 @@ def plot_robustness(
     for step_idx, rob in enumerate(ep_robustness):
         if rob is None:
             continue
-        trace_list = rob[0]
-        if not trace_list:
+        lower = extract_robustness_lower(rob)
+        upper = extract_robustness_upper(rob)
+        if lower is None or upper is None:
             continue
-        _, rob_interval = trace_list[0]
         times.append(step_idx * dt)
-        lowers.append(rob_interval.l)
-        uppers.append(rob_interval.u)
+        lowers.append(lower)
+        uppers.append(upper)
 
     if not times:
         print("No robustness data to plot.")

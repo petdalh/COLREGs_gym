@@ -2,7 +2,7 @@ wandb_configuration:
   project: "colregs-ppo"      
   run_name: multispeed_baseline
   group: null
-  enabled: true
+  enabled: false
 
 training_configuration:
   algorithm: PPO
@@ -13,7 +13,7 @@ training_configuration:
   checkpoint_freq: 100000
   tensorboard_log: logs/colregs_ppo
   plot_dir: plots
-  plot_every_episodes: 50
+  plot_every_episodes: 1
   policy_net_arch: [128, 128]
   n_steps: 512
   batch_size: 64
@@ -21,7 +21,7 @@ training_configuration:
 
 environment_configuration:
   controller_type: mrac   # backstepping | mrac
-  dynamics_backend: shoebox   # mchorcrux | shoebox
+  dynamics_backend: mchorcrux   # mchorcrux | shoebox
   dt: 0.25
   grid_width: 25.0
   grid_height: 62.0
@@ -31,8 +31,16 @@ environment_configuration:
   min_surge_command_mps: 0.1
   pre_maneuver_duration_s: 0.0
 
+  divergence_limits:
+    max_abs_position: 1000000.0
+    max_abs_heading: 1000000000.0
+    max_abs_surge_speed: 2.0
+    max_abs_sway_speed: 2.0
+    max_abs_yaw_rate: 6.0
+
   action_constraints:
     speed_floor_enabled: true
+    neutral_yaw_without_encounter: true
 
   action_configuration:
     yaw_rate_commands_deg_s: [-1.0, -0.5, 0.0, 0.5, 1.0]
@@ -41,8 +49,8 @@ environment_configuration:
   masking_configuration:
     debug_action_masker: false
     sim_dt: 0.5
-    min_search_depth: 2
-    decision_depth: 2
+    min_search_depth: 4
+    decision_depth: 4
     certification_margin: 3.0
     fallback_robustness_tolerance: 0.5
     pruning_enabled: false
@@ -78,7 +86,34 @@ environment_configuration:
     maneuver_horizon: 10.0
 
   monitoring_configuration:
-    masking_enabled: false
+    stl_semantics: istl   # pacstl | istl
+    istl_state_noise:
+      ego:
+        x: 0.0
+        y: 0.0
+        heading: 0.0
+        vx: 0.0
+        vy: 0.0
+      obstacle:
+        x: 0.0
+        y: 0.0
+        heading: 0.0
+        vx: 0.0
+        vy: 0.0
+    istl_state_noise_growth_per_s:
+      ego:
+        x: 0.0
+        y: 0.0
+        heading: 0.0
+        vx: 0.0
+        vy: 0.0
+      obstacle:
+        x: 0.0
+        y: 0.0
+        heading: 0.0
+        vx: 0.0
+        vy: 0.0
+    masking_enabled: true
     monitoring_radius: 40.0
     monitoring_radius_safety_factor: 4.0
     robustness_margin: 40.0

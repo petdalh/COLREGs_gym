@@ -10,6 +10,12 @@ from gym.termination import Termination
 from gym.truncation import Truncation
 from gym.utils.config import resolve_config
 from gym.utils.geometry import within_monitoring_radius, wrap_angle
+from gym.utils.istl import (
+    ISTL_SEMANTICS,
+    default_istl_time_steps,
+    normalize_istl_state_noise,
+    normalize_stl_semantics,
+)
 from gym.utils.reachable_sets import select_reachable_set
 
 from gymnasium import spaces
@@ -44,6 +50,7 @@ class COLREGsGym(McGym):
         monitoring_cfg = env_cfg.get("monitoring_configuration", {})
         reward_cfg = env_cfg.get("reward_configuration", {})
         action_constraints_cfg = env_cfg.get("action_constraints", {})
+        divergence_limits_cfg = env_cfg.get("divergence_limits", {})
         min_surge_command_mps = float(
             env_cfg.get(
                 "min_surge_command_mps",
@@ -69,6 +76,30 @@ class COLREGsGym(McGym):
         masking_cfg["dt"] = dt
         masking_cfg["decision_interval"] = decision_interval
         masking_cfg["min_surge_command_mps"] = min_surge_command_mps
+        self.stl_semantics = normalize_stl_semantics(
+            monitoring_cfg.get("stl_semantics", "pacstl")
+        )
+        self.istl_state_noise = normalize_istl_state_noise(
+            monitoring_cfg.get("istl_state_noise", {})
+        )
+        self.istl_state_noise_growth_per_s = normalize_istl_state_noise(
+            monitoring_cfg.get("istl_state_noise_growth_per_s", {})
+        )
+        self.istl_monitoring_time_steps = list(
+            monitoring_cfg.get(
+                "istl_time_steps",
+                default_istl_time_steps(
+                    masking_cfg.get("decision_depth", 5),
+                    float(dt) * int(decision_interval),
+                ),
+            )
+        )
+        masking_cfg["stl_semantics"] = self.stl_semantics
+        masking_cfg["istl_state_noise"] = self.istl_state_noise
+        masking_cfg["istl_state_noise_growth_per_s"] = (
+            self.istl_state_noise_growth_per_s
+        )
+        masking_cfg["istl_time_steps"] = self.istl_monitoring_time_steps
         masking_cfg["speed_floor_enabled"] = action_constraints_cfg.get(
             "speed_floor_enabled",
             masking_cfg.get("speed_floor_enabled", min_surge_command_mps > 0.0),
@@ -138,15 +169,24 @@ class COLREGsGym(McGym):
                 "initial_surge_command_fraction", 0.8
             ),
             min_surge_command_mps=min_surge_command_mps,
+            divergence_limits=divergence_limits_cfg,
         )
         self.observation = Observation(env_cfg.get("observation_configuration", config))
         self.robustness = Robustness(
             spec=self.spec,
             ellipsoids_Ab_dict=self.ellipsoids_Ab_dict,
             sampling_rate=monitoring_cfg.get("robustness_sampling_rate", 10),
+            stl_semantics=self.stl_semantics,
+            istl_state_noise=self.istl_state_noise,
+            istl_state_noise_growth_per_s=self.istl_state_noise_growth_per_s,
+            monitoring_time_steps=self.istl_monitoring_time_steps,
         )
         self.maneuver_robustness = ManeuverRobustness(
             sampling_rate=monitoring_cfg.get("robustness_sampling_rate", 10),
+            stl_semantics=self.stl_semantics,
+            istl_state_noise=self.istl_state_noise,
+            istl_state_noise_growth_per_s=self.istl_state_noise_growth_per_s,
+            monitoring_time_steps=self.istl_monitoring_time_steps,
         )
         self.termination = Termination()
         self.truncation = Truncation()
@@ -229,7 +269,7 @@ class COLREGsGym(McGym):
         sim_state = self.state.sim_state
         eta = np.asarray(sim_state["eta"], dtype=float)
         nu = np.asarray(sim_state["nu"][:3], dtype=float)
-        eta_3dof = np.array([eta[0], eta[1], eta[-1]], dtype=float)
+        eta_3dof = np.array([eta[0], eta[1], wrap_angle(float(eta[-1]))], dtype=float)
 
         observer._x_hat[:] = 0.0
         observer._x_hat[6:9] = eta_3dof
@@ -269,7 +309,7 @@ class COLREGsGym(McGym):
         sb = self._reference_shoebox
         sb.eta[0] = float(eta[0])
         sb.eta[1] = float(eta[1])
-        sb.eta[2] = float(eta[-1] if psi_d is None else psi_d)
+        sb.eta[2] = wrap_angle(float(eta[-1] if psi_d is None else psi_d))
         sb.nu[0] = float(nu[0])
         sb.nu[1] = float(nu[1])
         sb.nu[2] = float(nu[2])
@@ -291,7 +331,9 @@ class COLREGsGym(McGym):
         return np.array([tau_X, tau_Y, tau_N], dtype=float)
 
     def _set_vessel_3dof_state(self, eta_3dof, nu_3dof):
-        self.vessel.set_eta(three2sixDOF(np.asarray(eta_3dof, dtype=float)))
+        eta_3dof = np.asarray(eta_3dof, dtype=float).copy()
+        eta_3dof[2] = wrap_angle(float(eta_3dof[2]))
+        self.vessel.set_eta(three2sixDOF(eta_3dof))
         self.vessel.set_nu(three2sixDOF(np.asarray(nu_3dof, dtype=float)))
 
     def _step_reference_shoebox(
@@ -333,7 +375,10 @@ class COLREGsGym(McGym):
         self._set_vessel_3dof_state(sb.eta, sb.nu)
         self._sync_runtime_state()
         self._sync_observer_to_vessel()
-        boat_pos = np.array([sb.eta[0], sb.eta[1], sb.eta[2]], dtype=float)
+        boat_pos = np.array(
+            [sb.eta[0], sb.eta[1], wrap_angle(float(sb.eta[2]))],
+            dtype=float,
+        )
         terminated, truncated, info = self._check_termination(boat_pos)
         return last_tau, terminated, truncated, info
 
@@ -619,25 +664,62 @@ class COLREGsGym(McGym):
             spec_factory=spec_factory,
             tube_time_steps=self.encounter_scenario.tube_time_steps,
             ellipsoids_Ab_dict=self.ellipsoids_Ab_dict,
+            stl_semantics=self.stl_semantics,
+            istl_state_noise=self.istl_state_noise,
+            istl_state_noise_growth_per_s=self.istl_state_noise_growth_per_s,
+            monitoring_time_steps=self.istl_monitoring_time_steps,
         )
 
-    def configure_monitoring(self, spec, ellipsoids_Ab_dict, sampling_rate=None):
+    def configure_monitoring(
+        self,
+        spec,
+        ellipsoids_Ab_dict,
+        sampling_rate=None,
+        stl_semantics=None,
+        istl_state_noise=None,
+        istl_state_noise_growth_per_s=None,
+        monitoring_time_steps=None,
+    ):
         if sampling_rate is None:
             sampling_rate = self.robustness.sampling_rate
+        if stl_semantics is not None:
+            self.stl_semantics = normalize_stl_semantics(stl_semantics)
+        if istl_state_noise is not None:
+            self.istl_state_noise = normalize_istl_state_noise(istl_state_noise)
+        if istl_state_noise_growth_per_s is not None:
+            self.istl_state_noise_growth_per_s = normalize_istl_state_noise(
+                istl_state_noise_growth_per_s
+            )
+        if monitoring_time_steps is not None:
+            self.istl_monitoring_time_steps = list(monitoring_time_steps)
         self.spec = spec
         self.robustness.spec = spec
         self.robustness.sampling_rate = sampling_rate
-        self._reachable_set_bank = (
-            ellipsoids_Ab_dict
-            if self._is_reachable_set_bank(ellipsoids_Ab_dict)
-            else None
+        self.robustness.stl_semantics = self.stl_semantics
+        self.robustness.istl_state_noise = self.istl_state_noise
+        self.robustness.istl_state_noise_growth_per_s = (
+            self.istl_state_noise_growth_per_s
         )
-        self.ellipsoids_Ab_dict = (
-            self._select_reachable_set_for_current_speed()
-            if self._reachable_set_bank is not None
-            else ellipsoids_Ab_dict
+        self.robustness.monitoring_time_steps = self.istl_monitoring_time_steps
+        if self.stl_semantics == ISTL_SEMANTICS:
+            self._reachable_set_bank = None
+            self.ellipsoids_Ab_dict = None
+        else:
+            self._reachable_set_bank = (
+                ellipsoids_Ab_dict
+                if self._is_reachable_set_bank(ellipsoids_Ab_dict)
+                else None
+            )
+            self.ellipsoids_Ab_dict = (
+                self._select_reachable_set_for_current_speed()
+                if self._reachable_set_bank is not None
+                else ellipsoids_Ab_dict
+            )
+        self.encounter_scenario.configure_monitoring_cache(
+            self.ellipsoids_Ab_dict,
+            time_steps=self.istl_monitoring_time_steps,
+            stl_semantics=self.stl_semantics,
         )
-        self.encounter_scenario.configure_monitoring_cache(self.ellipsoids_Ab_dict)
         self.robustness.ellipsoids_Ab_dict = self.ellipsoids_Ab_dict
         if self.maneuver_spec_factory is not None:
             self.configure_maneuver_monitoring(self.maneuver_spec_factory)
@@ -655,11 +737,32 @@ class COLREGsGym(McGym):
         )
 
     def _refresh_monitoring_for_current_speed(self):
+        if self.stl_semantics == ISTL_SEMANTICS:
+            self.encounter_scenario.configure_monitoring_cache(
+                None,
+                time_steps=self.istl_monitoring_time_steps,
+                stl_semantics=self.stl_semantics,
+            )
+            self.robustness.ellipsoids_Ab_dict = None
+            if self.maneuver_spec_factory is not None:
+                self.configure_maneuver_monitoring(self.maneuver_spec_factory)
+            if self.state._active_maneuver_spec is not None:
+                self.masking._action_masker.update_scenario(
+                    self.state._active_maneuver_spec,
+                    None,
+                    self.encounter_scenario,
+                    spec_factory=self.maneuver_spec_factory,
+                )
+            return
+
         if self._reachable_set_bank is None:
             return
 
         self.ellipsoids_Ab_dict = self._select_reachable_set_for_current_speed()
-        self.encounter_scenario.configure_monitoring_cache(self.ellipsoids_Ab_dict)
+        self.encounter_scenario.configure_monitoring_cache(
+            self.ellipsoids_Ab_dict,
+            stl_semantics=self.stl_semantics,
+        )
         self.robustness.ellipsoids_Ab_dict = self.ellipsoids_Ab_dict
         if self.maneuver_spec_factory is not None:
             self.configure_maneuver_monitoring(self.maneuver_spec_factory)

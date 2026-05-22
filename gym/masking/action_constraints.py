@@ -7,6 +7,7 @@ class ActionConstraints:
         self.n_actions = action.n_actions
         self.min_surge_command_mps = 0.0
         self.speed_floor_enabled = False
+        self.neutral_yaw_without_encounter = False
         self.dt = 0.5
         self.decision_interval = 1
         self.configure(config)
@@ -22,6 +23,12 @@ class ActionConstraints:
                 self.min_surge_command_mps > 0.0,
             )
         )
+        self.neutral_yaw_without_encounter = bool(
+            config.get(
+                "neutral_yaw_without_encounter",
+                self.neutral_yaw_without_encounter,
+            )
+        )
         self.dt = float(config.get("dt", self.dt))
         self.decision_interval = int(
             config.get("decision_interval", self.decision_interval)
@@ -29,6 +36,13 @@ class ActionConstraints:
 
     def action_masks(self, state):
         mask = np.ones(self.n_actions, dtype=bool)
+        if (
+            self.neutral_yaw_without_encounter
+            and state is not None
+            and not state._encounter_active
+        ):
+            self._apply_neutral_yaw_mask(mask)
+
         if not self.speed_floor_enabled or self.min_surge_command_mps <= 0.0:
             return mask
 
@@ -44,6 +58,13 @@ class ActionConstraints:
             if self._would_cross_speed_floor(cmd_u, surge_accel_cmd, action_hold_dt):
                 mask[action_idx] = False
         return mask
+
+    def _apply_neutral_yaw_mask(self, mask):
+        yaw_idx = int(np.argmin(np.abs(self.action.yaw_rate_commands)))
+        n_accel = len(self.action.surge_accel_commands)
+        for action_idx in range(self.n_actions):
+            if action_idx // n_accel != yaw_idx:
+                mask[action_idx] = False
 
     def _current_surge_command(self, state):
         if state is not None and state._current_surge_cmd is not None:

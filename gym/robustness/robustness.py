@@ -3,13 +3,35 @@ import interval
 from pacstl.common.interfaces import TimeStampedState, PACReachableSet
 import numpy as np
 from gym.utils.geometry import to_obstacle_frame
+from gym.utils.istl import (
+    ISTL_SEMANTICS,
+    normalize_istl_state_noise,
+    normalize_stl_semantics,
+    obstacle_interval_state,
+    state_to_interval_state,
+)
 
 
 class Robustness:
-    def __init__(self, spec, ellipsoids_Ab_dict, sampling_rate):
+    def __init__(
+        self,
+        spec,
+        ellipsoids_Ab_dict,
+        sampling_rate,
+        stl_semantics="pacstl",
+        istl_state_noise=None,
+        istl_state_noise_growth_per_s=None,
+        monitoring_time_steps=None,
+    ):
         self.spec = spec
         self.ellipsoids_Ab_dict = ellipsoids_Ab_dict
         self.sampling_rate = sampling_rate
+        self.stl_semantics = normalize_stl_semantics(stl_semantics)
+        self.istl_state_noise = normalize_istl_state_noise(istl_state_noise)
+        self.istl_state_noise_growth_per_s = normalize_istl_state_noise(
+            istl_state_noise_growth_per_s
+        )
+        self.monitoring_time_steps = list(monitoring_time_steps or [])
         self._cache_use_logged = False
 
     def evaluate(self, state, sim_step_count, in_radius=None):
@@ -51,7 +73,9 @@ class Robustness:
         encounter_scenario,
     ) -> interval.interval:
         """Evaluate the pacSTL specification over the prediction horizon."""
-        if self.spec is None or self.ellipsoids_Ab_dict is None:
+        if self.spec is None:
+            return None
+        if self.stl_semantics != ISTL_SEMANTICS and self.ellipsoids_Ab_dict is None:
             return None
         if encounter_vessel_eta is None:
             return None
@@ -70,7 +94,11 @@ class Robustness:
         obs_ve = encounter_speed * np.sin(obs_psi)
 
         ego_trajectory = {}
-        if encounter_scenario is not None and encounter_scenario.reachable_tube:
+        obstacle_trajectory = {}
+        if self.stl_semantics == ISTL_SEMANTICS:
+            tube_time_steps = self._istl_time_steps(encounter_scenario)
+            reachable_tube = {}
+        elif encounter_scenario is not None and encounter_scenario.reachable_tube:
             reachable_tube = encounter_scenario.reachable_tube
             tube_time_steps = encounter_scenario.tube_time_steps
             if not self._cache_use_logged:
@@ -90,6 +118,8 @@ class Robustness:
                 )
                 for time_step, raw_tuple in self.ellipsoids_Ab_dict.items()
             }
+        if not tube_time_steps:
+            return None
 
         for time_step in tube_time_steps:
             # Predict ego position in world frame at this time step
@@ -113,9 +143,25 @@ class Robustness:
                 [local_x, local_y, local_psi, local_vx, local_vy, speed]
             )
 
-            ego_trajectory[time_step] = TimeStampedState(
-                time_step=time_step, state_array=state_array
-            )
+            if self.stl_semantics == ISTL_SEMANTICS:
+                ego_trajectory[time_step] = state_to_interval_state(
+                    time_step=time_step,
+                    nominal_state=state_array,
+                    noise=self.istl_state_noise["ego"],
+                    noise_growth_per_s=self.istl_state_noise_growth_per_s["ego"],
+                )
+                obstacle_trajectory[time_step] = obstacle_interval_state(
+                    time_step=time_step,
+                    encounter_speed=encounter_speed,
+                    noise=self.istl_state_noise["obstacle"],
+                    noise_growth_per_s=self.istl_state_noise_growth_per_s[
+                        "obstacle"
+                    ],
+                )
+            else:
+                ego_trajectory[time_step] = TimeStampedState(
+                    time_step=time_step, state_array=state_array
+                )
 
         self._log_eval_inputs(
             eta=eta,
@@ -129,7 +175,14 @@ class Robustness:
             ego_trajectory=ego_trajectory,
             reachable_tube=reachable_tube,
         )
+        if self.stl_semantics == ISTL_SEMANTICS:
+            return self.spec.evaluate(obstacle_trajectory, ego_trajectory)
         return self.spec.evaluate(reachable_tube, ego_trajectory)
+
+    def _istl_time_steps(self, encounter_scenario):
+        if encounter_scenario is not None and encounter_scenario.tube_time_steps:
+            return list(encounter_scenario.tube_time_steps)
+        return list(self.monitoring_time_steps)
 
     @staticmethod
     def _log_eval_inputs(

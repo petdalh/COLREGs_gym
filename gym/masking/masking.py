@@ -3,6 +3,7 @@ import numpy as np
 from .action_constraints import ActionConstraints
 from .action_masker import ActionMasker
 from gym.utils.geometry import within_monitoring_radius
+from gym.utils.robustness import extract_robustness_upper
 
 
 class Masking:
@@ -86,30 +87,29 @@ class Masking:
             return
 
         was_active = env.state._encounter_active
-        trace_list = robustness[0]
-        for _, rob_interval in trace_list:
-            if rob_interval.u > -self.robustness_margin:
-                env.state._encounter_active = True
-                if env.state._active_maneuver_spec is None:
-                    env.state._active_maneuver_spec = env.spec
-                    if env.state._active_maneuver_spec is not None:
-                        self._action_masker.update_scenario(
-                            env.state._active_maneuver_spec,
-                            env.ellipsoids_Ab_dict,
-                            env.encounter_scenario,
-                            spec_factory=getattr(env, "maneuver_spec_factory", None),
-                        )
-                if not was_active:
-                    print(
-                        f"[Encounter] Activated (rob_upper={rob_interval.u:.2f}, "
-                        f"margin={self.robustness_margin:.1f})"
+        rob_upper = extract_robustness_upper(robustness)
+        if rob_upper is not None and rob_upper > -self.robustness_margin:
+            env.state._encounter_active = True
+            if env.state._active_maneuver_spec is None:
+                env.state._active_maneuver_spec = env.spec
+                if env.state._active_maneuver_spec is not None:
+                    self._action_masker.update_scenario(
+                        env.state._active_maneuver_spec,
+                        env.ellipsoids_Ab_dict,
+                        env.encounter_scenario,
+                        spec_factory=getattr(env, "maneuver_spec_factory", None),
                     )
-                    env.state._cached_mask = self._compute_mask(
-                        env,
-                        robustness_margin=self.robustness_margin,
-                    )
-                    self._steps_since_mask_update = 0
-                return
+            if not was_active:
+                print(
+                    f"[Encounter] Activated (rob_upper={rob_upper:.2f}, "
+                    f"margin={self.robustness_margin:.1f})"
+                )
+                env.state._cached_mask = self._compute_mask(
+                    env,
+                    robustness_margin=self.robustness_margin,
+                )
+                self._steps_since_mask_update = 0
+            return
 
         env.state._encounter_active = False
         env.state._active_maneuver_spec = None

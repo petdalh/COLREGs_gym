@@ -11,6 +11,14 @@ from gym.utils.geometry import (
     within_monitoring_radius,
     wrap_angle,
 )
+from gym.utils.istl import (
+    ISTL_SEMANTICS,
+    default_istl_time_steps,
+    normalize_istl_state_noise,
+    normalize_stl_semantics,
+    obstacle_interval_state,
+    state_to_interval_state,
+)
 from gym.utils.robustness import extract_robustness_lower
 
 
@@ -32,6 +40,10 @@ class ActionMasker:
         self._shoebox = None
         self._use_3dof = False
         self._shoebox_sub_dt = 0.1
+        self.stl_semantics = "pacstl"
+        self.istl_state_noise = normalize_istl_state_noise()
+        self.istl_state_noise_growth_per_s = normalize_istl_state_noise()
+        self.istl_time_steps = []
         self.configure(config=config, vessel_model=vessel_model)
 
         self.spec = None
@@ -104,6 +116,24 @@ class ActionMasker:
         # Heuristic pruning: skip expanding a node's children when its upper
         # robustness bound is below this threshold (default -inf = no pruning).
         self.pruning_threshold = float(config.get("pruning_threshold", -np.inf))
+        self.stl_semantics = normalize_stl_semantics(
+            config.get("stl_semantics", self.stl_semantics)
+        )
+        self.istl_state_noise = normalize_istl_state_noise(
+            config.get("istl_state_noise", self.istl_state_noise)
+        )
+        self.istl_state_noise_growth_per_s = normalize_istl_state_noise(
+            config.get(
+                "istl_state_noise_growth_per_s",
+                self.istl_state_noise_growth_per_s,
+            )
+        )
+        self.istl_time_steps = list(
+            config.get(
+                "istl_time_steps",
+                default_istl_time_steps(self.decision_depth, self.action_hold_dt),
+            )
+        )
         self._use_3dof = bool(config.get("use_3dof_dynamics", False))
         self._shoebox_sub_dt = float(config.get("shoebox_sub_dt", getattr(self, "_shoebox_sub_dt", 0.1)))
         if self._use_3dof:
@@ -142,7 +172,14 @@ class ActionMasker:
         self._spec_cache.clear()
         self.ellipsoids_Ab_dict = ellipsoids_Ab_dict
 
-        if (
+        if self.stl_semantics == ISTL_SEMANTICS:
+            if encounter_scenario is not None and encounter_scenario.tube_time_steps:
+                self.tube_time_steps = list(encounter_scenario.tube_time_steps)
+            else:
+                self.tube_time_steps = list(self.istl_time_steps)
+            self.reachable_tube = {}
+            self._using_cached_tube = False
+        elif (
             encounter_scenario is not None
             and encounter_scenario.ellipsoids_Ab_dict is ellipsoids_Ab_dict
             and encounter_scenario.reachable_tube
@@ -210,9 +247,7 @@ class ActionMasker:
         is_fallback = False
         self.last_diagnostics = self._diagnostics_stub("not_evaluated")
 
-        if (
-            self.spec is None and self._spec_factory is None
-        ) or self.ellipsoids_Ab_dict is None:
+        if self._missing_monitoring_data():
             self.last_diagnostics = self._diagnostics_stub("missing_spec_or_tube")
             return mask, is_fallback
 
@@ -260,7 +295,7 @@ class ActionMasker:
             if state is not None and state._current_surge_cmd is not None
             else float(ego_state["nu"][0])
         )
-        first_action_candidates = [
+        speed_valid_candidates = [
             action_idx
             for action_idx in candidates
             if not self._violates_speed_floor(
@@ -268,7 +303,11 @@ class ActionMasker:
                 self._decode_action(action_idx)[1],
                 self.action_hold_dt,
             )
-            and self._respects_crossing_side(
+        ]
+        side_filtered_candidates = [
+            action_idx
+            for action_idx in speed_valid_candidates
+            if self._respects_crossing_side(
                 situation,
                 initial_psi_d_offset,
                 self._decode_action(action_idx)[0],
@@ -276,6 +315,16 @@ class ActionMasker:
                 enforce=self.enforce_starboard_crossing_side,
             )
         ]
+        enforce_crossing_side = bool(side_filtered_candidates)
+        first_action_candidates = (
+            side_filtered_candidates
+            if side_filtered_candidates
+            else speed_valid_candidates
+        )
+
+        if not first_action_candidates:
+            self.last_diagnostics = self._diagnostics_stub("no_candidate_actions")
+            return np.ones(self.n_actions, dtype=bool), True
 
         for first_action in first_action_candidates:
             best_rob = -np.inf  # track best (highest) lower bound seen
@@ -298,7 +347,7 @@ class ActionMasker:
                     {
                         "state": ego_state,
                         "trajectory": {},
-                        "partial_tube": {},
+                        "partial_data": {},
                         "depth": 0,
                         "pending_action": first_action,
                         "psi_d_offset": initial_psi_d_offset,
@@ -319,7 +368,10 @@ class ActionMasker:
                     node["psi_d_offset"],
                     yaw_rate_cmd,
                     self.action_hold_dt,
-                    enforce=self.enforce_starboard_crossing_side,
+                    enforce=(
+                        self.enforce_starboard_crossing_side
+                        and enforce_crossing_side
+                    ),
                 ):
                     continue
                 if self._violates_speed_floor(
@@ -339,13 +391,13 @@ class ActionMasker:
                 trajectory = node["trajectory"] | rollout
 
                 spec = self._get_spec(node["depth"])
-                # Extend the parent's already-resolved partial_tube by one key
-                # instead of rebuilding it from the full trajectory each time.
                 (target_t,) = rollout  # rollout always contains exactly one entry
-                partial_tube = node["partial_tube"] | {
-                    target_t: self.reachable_tube[target_t]
-                }
-                robustness = spec.evaluate(partial_tube, trajectory)
+                partial_data = self._extend_partial_data(
+                    node["partial_data"],
+                    target_t,
+                    encounter_speed,
+                )
+                robustness = self._evaluate_spec(spec, partial_data, trajectory)
                 # maneuver_verified: positive robustness = spec satisfied = safe.
                 # Use lower bound (worst-case obstacle realisation) to certify
                 # robust safety; certification_margin is independent of the
@@ -387,7 +439,7 @@ class ActionMasker:
                             {
                                 "state": next_state,
                                 "trajectory": trajectory,
-                                "partial_tube": partial_tube,
+                                "partial_data": partial_data,
                                 "depth": next_depth,
                                 "pending_action": cont_action,
                                 "psi_d_offset": float(
@@ -455,7 +507,10 @@ class ActionMasker:
                         initial_psi_d_offset,
                         yaw_rate_cmd,
                         self.action_hold_dt,
-                        enforce=self.enforce_starboard_crossing_side,
+                        enforce=(
+                            self.enforce_starboard_crossing_side
+                            and enforce_crossing_side
+                        ),
                     ):
                         fallback_candidates.append((float(rob), float(yaw_rate_cmd), idx))
 
@@ -488,7 +543,7 @@ class ActionMasker:
 
                 print(
                     f"[ActionMask] Fallback after "
-                    f"{'cached-tube' if self._using_cached_tube else 'local-tube'} "
+                    f"{self._monitoring_data_label()} "
                     f"verification: {mask.sum()} actions allowed "
                     f"(best robustness={max_rob:.2f})"
                 )
@@ -502,7 +557,10 @@ class ActionMasker:
                         initial_psi_d_offset,
                         yaw_rate_cmd,
                         self.action_hold_dt,
-                        enforce=self.enforce_starboard_crossing_side,
+                        enforce=(
+                            self.enforce_starboard_crossing_side
+                            and enforce_crossing_side
+                        ),
                     ):
                         if self.fallback_mode == "robustness_best":
                             key = (-abs(float(yaw_rate_cmd)), -int(action_idx))
@@ -536,6 +594,33 @@ class ActionMasker:
             fallback_allowed_all=fallback_allowed_all,
         )
         return mask, is_fallback
+
+    def _missing_monitoring_data(self):
+        if self.spec is None and self._spec_factory is None:
+            return True
+        return self.stl_semantics != ISTL_SEMANTICS and self.ellipsoids_Ab_dict is None
+
+    def _extend_partial_data(self, partial_data, target_t, encounter_speed):
+        if self.stl_semantics == ISTL_SEMANTICS:
+            return partial_data | {
+                target_t: obstacle_interval_state(
+                    time_step=target_t,
+                    encounter_speed=encounter_speed,
+                    noise=self.istl_state_noise["obstacle"],
+                    noise_growth_per_s=self.istl_state_noise_growth_per_s[
+                        "obstacle"
+                    ],
+                )
+            }
+        return partial_data | {target_t: self.reachable_tube[target_t]}
+
+    def _evaluate_spec(self, spec, partial_data, trajectory):
+        return spec.evaluate(partial_data, trajectory)
+
+    def _monitoring_data_label(self):
+        if self.stl_semantics == ISTL_SEMANTICS:
+            return "I-STL interval"
+        return "cached-tube" if self._using_cached_tube else "local-tube"
 
     def _candidate_actions(self, situation):
         return list(range(self.n_actions))
@@ -649,7 +734,11 @@ class ActionMasker:
         if situation != "crossing":
             return True
         next_offset = float(psi_d_offset) + float(yaw_rate_cmd) * float(dt)
-        return next_offset >= -float(tolerance)
+        if next_offset >= -float(tolerance):
+            return True
+        if float(psi_d_offset) < -float(tolerance):
+            return next_offset > float(psi_d_offset) + float(tolerance)
+        return False
 
     def _init_shoebox(self, config):
         try:
@@ -827,9 +916,17 @@ class ActionMasker:
             ]
         )
 
-        rollout = {
-            target_t: TimeStampedState(time_step=target_t, state_array=state_array)
-        }
+        if self.stl_semantics == ISTL_SEMANTICS:
+            rollout_state = state_to_interval_state(
+                time_step=target_t,
+                nominal_state=state_array,
+                noise=self.istl_state_noise["ego"],
+                noise_growth_per_s=self.istl_state_noise_growth_per_s["ego"],
+            )
+        else:
+            rollout_state = TimeStampedState(time_step=target_t, state_array=state_array)
+
+        rollout = {target_t: rollout_state}
         next_state = {
             "eta": np.array([px, py, psi]),
             "nu": nu_out,

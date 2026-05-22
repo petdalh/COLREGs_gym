@@ -10,11 +10,28 @@ class State:
         ego_vessel_model,
         initial_surge_command_fraction=0.8,
         min_surge_command_mps=0.0,
+        divergence_limits=None,
     ):
         self.monitoring_radius = monitoring_radius
         self.ego_vessel_model = ego_vessel_model
         self.initial_surge_command_fraction = float(initial_surge_command_fraction)
         self.min_surge_command_mps = float(min_surge_command_mps)
+        divergence_limits = dict(divergence_limits or {})
+        self.max_abs_position = float(
+            divergence_limits.get("max_abs_position", 1e6)
+        )
+        self.max_abs_heading = float(
+            divergence_limits.get("max_abs_heading", 1e9)
+        )
+        self.max_abs_surge_speed = float(
+            divergence_limits.get("max_abs_surge_speed", 2.0)
+        )
+        self.max_abs_sway_speed = float(
+            divergence_limits.get("max_abs_sway_speed", 2.0)
+        )
+        self.max_abs_yaw_rate = float(
+            divergence_limits.get("max_abs_yaw_rate", 2.0)
+        )
 
         self.encounter_vessel_eta = None
         self._encounter_speed = None
@@ -132,11 +149,16 @@ class State:
 
     def is_diverged(self):
         """Check if the sim state has diverged (non-finite or too large)."""
+        eta = np.asarray(self.sim_state["eta"], dtype=float)
+        nu = np.asarray(self.sim_state["nu"], dtype=float)
         return (
-            not np.all(np.isfinite(self.sim_state["eta"]))
-            or not np.all(np.isfinite(self.sim_state["nu"]))
-            or np.any(np.abs(self.sim_state["eta"][:2]) > 1e6)
-            or np.any(np.abs(self.sim_state["nu"]) > 2)
+            not np.all(np.isfinite(eta))
+            or not np.all(np.isfinite(nu))
+            or np.any(np.abs(eta[:2]) > self.max_abs_position)
+            or abs(float(eta[-1])) > self.max_abs_heading
+            or abs(float(nu[0])) > self.max_abs_surge_speed
+            or abs(float(nu[1])) > self.max_abs_sway_speed
+            or abs(float(nu[2])) > self.max_abs_yaw_rate
         )
 
     def set_current_tau(self, tau: np.ndarray):
@@ -148,10 +170,15 @@ class State:
         goal = sim_state.get("goal")
         if goal is not None:
             self._current_heading_cmd = float(
-                np.arctan2(float(goal[1]) - float(eta[1]), float(goal[0]) - float(eta[0]))
+                wrap_angle(
+                    np.arctan2(
+                        float(goal[1]) - float(eta[1]),
+                        float(goal[0]) - float(eta[0]),
+                    )
+                )
             )
         else:
-            self._current_heading_cmd = float(eta[-1])
+            self._current_heading_cmd = wrap_angle(float(eta[-1]))
         self._current_surge_cmd = self._clip_surge_cmd(
             self.initial_surge_command_fraction * self.ego_vessel_model.v_max
         )
@@ -204,10 +231,10 @@ class State:
         self._current_yaw_rate_cmd = float(yaw_rate_cmd)
         self._current_surge_accel_cmd = float(surge_accel_cmd)
 
-        self._psi_d_offset += yaw_rate_cmd * dt
+        self._psi_d_offset = wrap_angle(self._psi_d_offset + yaw_rate_cmd * dt)
 
         goal_bearing, goal_bearing_dot = self._goal_bearing_and_rate()
-        self._current_heading_cmd = goal_bearing + self._psi_d_offset
+        self._current_heading_cmd = wrap_angle(goal_bearing + self._psi_d_offset)
         psi_d_dot = goal_bearing_dot + float(yaw_rate_cmd)
         psi_d_ddot = (
             (goal_bearing_dot - self._current_goal_bearing_dot) / dt
@@ -243,7 +270,7 @@ class State:
 
     def set_heading_speed_commands(self, psi_d: float, u_d: float):
         """Set commanded heading and speed directly (goal-bearing action space)."""
-        self._current_heading_cmd = float(psi_d)
+        self._current_heading_cmd = wrap_angle(float(psi_d))
         self._current_surge_cmd = self._clip_surge_cmd(u_d)
         self._current_surge_command_fraction = (
             self._current_surge_cmd / self.ego_vessel_model.v_max
@@ -262,6 +289,7 @@ class State:
         if self._current_heading_cmd is None or self._current_surge_cmd is None:
             self.initialize_command_references(self.sim_state)
 
+        self._current_heading_cmd = wrap_angle(float(self._current_heading_cmd))
         self._current_yaw_rate_cmd = 0.0
         self._current_surge_accel_cmd = 0.0
         self._current_psi_d_dot = 0.0

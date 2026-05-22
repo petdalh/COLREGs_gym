@@ -358,6 +358,24 @@ class ColregsMonitorCallback(BaseCallback):
 
         tag = f"ep{episode_num:05d}"
         step_dt = self.eval_env.dt * getattr(self.eval_env, "decision_interval", 5)
+        terminal_reason = info.get("reason", "unknown")
+        final_goal_distance = None
+        if self.eval_env.history_ego and self.eval_env.goal is not None:
+            ego_final = np.asarray(self.eval_env.history_ego[-1], dtype=float)
+            goal_xy = np.asarray(self.eval_env.goal[:2], dtype=float)
+            final_goal_distance = float(np.linalg.norm(goal_xy - ego_final))
+        final_encounter_distance = None
+        if self.eval_env.history_ego and self.eval_env.history_enc:
+            ego_final = np.asarray(self.eval_env.history_ego[-1], dtype=float)
+            enc_final = np.asarray(self.eval_env.history_enc[-1], dtype=float)
+            final_encounter_distance = float(np.linalg.norm(enc_final - ego_final))
+        print(
+            "[EvalPlot] "
+            f"episode={episode_num}, reason={terminal_reason}, "
+            f"steps={len(self.eval_env.history_ego)}, "
+            f"final_goal_dist={final_goal_distance}, "
+            f"final_encounter_dist={final_encounter_distance}"
+        )
 
         plot_episode_trajectory(
             ego_traj=self.eval_env.history_ego,
@@ -368,6 +386,9 @@ class ColregsMonitorCallback(BaseCallback):
             episode_num=episode_num,
             collision_radius=self.eval_env.encounter_scenario.collision_radius,
             obstacle_speed_mps=self.eval_env.state.encounter_speed,
+            terminal_reason=terminal_reason,
+            final_goal_distance=final_goal_distance,
+            final_encounter_distance=final_encounter_distance,
             save_path=os.path.join(self.plot_dir, f"traj_{tag}.png"),
         )
 

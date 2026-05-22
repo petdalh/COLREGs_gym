@@ -12,6 +12,7 @@ import wandb
 from gym.colregs_gym import COLREGsGym
 from gym.callback import ColregsMonitorCallback
 from gym.utils.config import load_config
+from gym.utils.istl import ISTL_SEMANTICS, normalize_stl_semantics
 
 try:
     from pacstl.core.factory import create as create_spec
@@ -23,22 +24,37 @@ except ImportError as exc:
 
 
 def configure_monitoring(env, monitoring_cfg):
-    try:
-        from gym.utils.reachable_sets import preload_reachable_sets
-    except ImportError:
-        return False
+    stl_semantics = normalize_stl_semantics(
+        monitoring_cfg.get("stl_semantics", getattr(env, "stl_semantics", "pacstl"))
+    )
+    domain = "colregs_istl" if stl_semantics == ISTL_SEMANTICS else "colregs"
+    spec = create_spec(domain, "crossing_detection")
+    ellipsoids = None
+    if stl_semantics != ISTL_SEMANTICS:
+        try:
+            from gym.utils.reachable_sets import preload_reachable_sets
+        except ImportError:
+            return False
+        ellipsoids = preload_reachable_sets()
 
-    spec = create_spec("colregs", "crossing_detection")
-    ellipsoids = preload_reachable_sets()
     env.configure_monitoring(
         spec,
         ellipsoids,
         sampling_rate=monitoring_cfg.get("robustness_sampling_rate", 5),
+        stl_semantics=stl_semantics,
+        istl_state_noise=monitoring_cfg.get("istl_state_noise", {}),
+        istl_state_noise_growth_per_s=monitoring_cfg.get(
+            "istl_state_noise_growth_per_s", {}
+        ),
+        monitoring_time_steps=monitoring_cfg.get(
+            "istl_time_steps",
+            getattr(env, "istl_monitoring_time_steps", None),
+        ),
     )
     
     ego_vessel = EGO_VESSEL_DEFAULT
     env.maneuver_spec_factory = lambda T_end, T_start=None, _ev=ego_vessel: create_spec(
-        "colregs", "maneuver_verified", T_end=T_end,
+        domain, "maneuver_verified", T_end=T_end,
         **({"T_start": T_start} if T_start is not None else {}),
         ego_vessel=_ev,
     )
@@ -65,7 +81,7 @@ def make_env(config, enable_monitoring, enable_episode_logging=True):
         if not monitoring_enabled:
             print(
                 "Monitoring helpers were not available, training will continue "
-                "without pacSTL masking."
+                "without STL masking."
             )
 
     if not enable_episode_logging:
