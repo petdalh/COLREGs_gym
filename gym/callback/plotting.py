@@ -402,13 +402,20 @@ def plot_robustness(
     for step_idx, rob in enumerate(ep_robustness):
         if rob is None:
             continue
-        trace_list = rob[0]
-        if not trace_list:
-            continue
-        _, rob_interval = trace_list[0]
+        if isinstance(rob, dict):
+            rob_interval = rob
+        else:
+            trace_list = rob[0]
+            if not trace_list:
+                continue
+            _, rob_interval = trace_list[0]
         times.append(step_idx * dt)
-        lowers.append(rob_interval.l)
-        uppers.append(rob_interval.u)
+        lowers.append(
+            rob_interval["lower"] if isinstance(rob_interval, dict) else rob_interval.l
+        )
+        uppers.append(
+            rob_interval["upper"] if isinstance(rob_interval, dict) else rob_interval.u
+        )
 
     if not times:
         print("No robustness data to plot.")

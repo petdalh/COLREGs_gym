@@ -33,6 +33,7 @@ class State:
         self._current_u_d_dot: float = 0.0
         self._current_goal_bearing_dot: float = 0.0
         self._psi_d_offset: float = 0.0
+        self._transit_heading_cmd: float | None = None
         self.fallback_used: bool = False
         self.last_mask_diagnostics = {}
 
@@ -142,11 +143,17 @@ class State:
     def set_current_tau(self, tau: np.ndarray):
         self._current_tau = np.asarray(tau, dtype=float)
 
-    def initialize_command_references(self, sim_state):
+    def initialize_command_references(self, sim_state, use_transit_heading=False):
         """Reset carried controller references at the start of an episode."""
         eta = sim_state["eta"]
         goal = sim_state.get("goal")
-        if goal is not None:
+
+        if self._transit_heading_cmd is None:
+            self._transit_heading_cmd = float(eta[-1])
+
+        if use_transit_heading:
+            self._current_heading_cmd = self._transit_heading_cmd
+        elif goal is not None:
             self._current_heading_cmd = float(
                 np.arctan2(float(goal[1]) - float(eta[1]), float(goal[0]) - float(eta[0]))
             )
@@ -167,7 +174,20 @@ class State:
         self._current_psi_d_ddot = 0.0
         self._current_u_d_dot = 0.0
         self._current_goal_bearing_dot = goal_bearing_dot
-        self._psi_d_offset = 0.0
+        self._sync_heading_offset_to_command(goal_bearing_dot=goal_bearing_dot)
+
+    def _sync_heading_offset_to_command(self, goal_bearing_dot=None):
+        if self._current_heading_cmd is None or self.sim_state is None:
+            self._psi_d_offset = 0.0
+            return
+
+        goal_bearing, computed_goal_bearing_dot = self._goal_bearing_and_rate()
+        self._psi_d_offset = float(wrap_angle(self._current_heading_cmd - goal_bearing))
+        self._current_goal_bearing_dot = (
+            computed_goal_bearing_dot
+            if goal_bearing_dot is None
+            else float(goal_bearing_dot)
+        )
 
     def _goal_bearing_and_rate(self, sim_state=None):
         sim_state = self.sim_state if sim_state is None else sim_state
@@ -276,6 +296,31 @@ class State:
             self._current_u_d_dot,
         )
 
+    def hold_transit_heading(self):
+        """Hold the episode-start heading until an encounter maneuver is active."""
+        if self._current_heading_cmd is None or self._current_surge_cmd is None:
+            self.initialize_command_references(
+                self.sim_state,
+                use_transit_heading=True,
+            )
+        elif self._transit_heading_cmd is None:
+            self._transit_heading_cmd = float(self.sim_state["eta"][-1])
+
+        self._current_heading_cmd = self._transit_heading_cmd
+        self._current_yaw_rate_cmd = 0.0
+        self._current_surge_accel_cmd = 0.0
+        self._current_psi_d_dot = 0.0
+        self._current_psi_d_ddot = 0.0
+        self._current_u_d_dot = 0.0
+        self._sync_heading_offset_to_command()
+        return (
+            self._current_heading_cmd,
+            self._current_surge_cmd,
+            self._current_psi_d_dot,
+            self._current_psi_d_ddot,
+            self._current_u_d_dot,
+        )
+
     def set_current_rate_commands(self, yaw_rate_cmd: float, surge_accel_cmd: float):
         self._current_yaw_rate_cmd = float(yaw_rate_cmd)
         self._current_surge_accel_cmd = float(surge_accel_cmd)
@@ -346,6 +391,7 @@ class State:
         self._current_u_d_dot = 0.0
         self._current_goal_bearing_dot = 0.0
         self._psi_d_offset = 0.0
+        self._transit_heading_cmd = None
         self.fallback_used = False
         self.last_mask_diagnostics = {}
         self.sim_state = None

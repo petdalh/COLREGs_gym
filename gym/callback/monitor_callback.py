@@ -216,6 +216,7 @@ class ColregsMonitorCallback(BaseCallback):
                 self.episode_reasons.append(reason)
                 if reason == "collision":
                     self._cumulative_collisions += 1
+                    self._plot_collision_episode(info, self.episode_count, env_idx)
                 elif reason == "goal_reached":
                     self._cumulative_goals += 1
                 elif reason == "time_limit":
@@ -432,6 +433,77 @@ class ColregsMonitorCallback(BaseCallback):
                 log_dict["actions/yaw_rate_cmd_deg_s"] = wandb.Histogram(yaw_rate_choices)
 
             wandb.log(log_dict)
+
+    def _plot_collision_episode(self, info, episode_num, env_idx):
+        plot_data = info.get("collision_plot_data")
+        if not plot_data:
+            return
+
+        ego_traj = plot_data.get("ego_traj", [])
+        goal = plot_data.get("goal")
+        if not ego_traj or goal is None:
+            return
+
+        tag = f"collision_ep{episode_num:05d}_env{env_idx:02d}"
+        traj_path = os.path.join(self.plot_dir, f"traj_{tag}.png")
+        control_path = os.path.join(self.plot_dir, f"control_{tag}.png")
+        rob_path = os.path.join(self.plot_dir, f"rob_{tag}.png")
+        maneuver_rob_path = os.path.join(self.plot_dir, f"maneuver_rob_{tag}.png")
+
+        plot_episode_trajectory(
+            ego_traj=ego_traj,
+            ego_speed_traj=plot_data.get("history_surge_command_fraction"),
+            enc_traj=plot_data.get("enc_traj", []),
+            goal=goal,
+            dt=plot_data.get("dt", 0.5),
+            episode_num=episode_num,
+            collision_radius=plot_data.get("collision_radius", 0.0),
+            obstacle_speed_mps=plot_data.get("obstacle_speed_mps"),
+            save_path=traj_path,
+        )
+
+        plot_control_timeseries(
+            history_heading_deg=plot_data.get("history_heading_deg", []),
+            history_heading_cmd_deg=plot_data.get("history_heading_cmd_deg", []),
+            history_heading_error_deg=plot_data.get("history_heading_error_deg", []),
+            history_surge=plot_data.get("history_surge", []),
+            history_surge_cmd=plot_data.get("history_surge_cmd", []),
+            history_tau_surge=plot_data.get("history_tau_surge", []),
+            history_tau_yaw=plot_data.get("history_tau_yaw", []),
+            dt=plot_data.get("dt", 0.5),
+            save_path=control_path,
+        )
+
+        robustness_dt = plot_data.get("robustness_dt", plot_data.get("dt", 0.5))
+        history_rob = plot_data.get("history_rob", [])
+        if any(rob is not None for rob in history_rob):
+            plot_robustness(
+                ep_robustness=history_rob,
+                dt=robustness_dt,
+                save_path=rob_path,
+                title="Crossing Detection",
+            )
+
+        history_maneuver_rob = plot_data.get("history_maneuver_rob", [])
+        if any(rob is not None for rob in history_maneuver_rob):
+            plot_robustness(
+                ep_robustness=history_maneuver_rob,
+                dt=robustness_dt,
+                save_path=maneuver_rob_path,
+                title="Maneuver Spec",
+            )
+
+        if wandb.run:
+            log_dict = {"collisions/trajectory": wandb.Image(traj_path)}
+            if os.path.exists(control_path):
+                log_dict["collisions/control"] = wandb.Image(control_path)
+            if os.path.exists(rob_path):
+                log_dict["collisions/robustness_crossing"] = wandb.Image(rob_path)
+            if os.path.exists(maneuver_rob_path):
+                log_dict["collisions/robustness_maneuver"] = wandb.Image(
+                    maneuver_rob_path
+                )
+            wandb.log(log_dict, step=self.num_timesteps)
 
     def _on_training_end(self):
         self._save_training_curves()

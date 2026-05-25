@@ -1,6 +1,7 @@
 import argparse
 import os
 import shutil
+from datetime import datetime
 from pathlib import Path
 
 from sb3_contrib import MaskablePPO
@@ -144,13 +145,19 @@ def build_train_env(config, num_envs, train_cfg, enable_monitoring):
     return VecMonitor(SubprocVecEnv(env_fns, start_method=start_method))
 
 
-def build_model(env, checkpoint_path: Path, train_cfg):
-    if checkpoint_path.exists():
-        print(f"Loading model from {checkpoint_path}")
-        return MaskablePPO.load(str(checkpoint_path), env=env)
-
+def build_model(env, train_cfg):
     if train_cfg.get("algorithm", "PPO") != "PPO":
         raise NotImplementedError("Only PPO is currently supported.")
+
+    resume_from_checkpoint = train_cfg.get("resume_from_checkpoint")
+    if resume_from_checkpoint:
+        checkpoint_path = Path(resume_from_checkpoint).expanduser()
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(
+                f"resume_from_checkpoint does not exist: {checkpoint_path}"
+            )
+        print(f"Loading model from {checkpoint_path}")
+        return MaskablePPO.load(str(checkpoint_path), env=env)
 
     policy_net_arch = train_cfg.get("policy_net_arch", [128, 128])
     return MaskablePPO(
@@ -179,6 +186,11 @@ def parse_args():
         default=None,
         help="Override training timesteps from config.",
     )
+    parser.add_argument(
+        "--resume-from-checkpoint",
+        default=None,
+        help="Explicit checkpoint path to resume from.",
+    )
     return parser.parse_args()
 
 
@@ -189,6 +201,7 @@ def build_wandb_config(config, args):
             "config_path": str(Path(args.config).resolve()),
             "disable_monitoring": args.disable_monitoring,
             "timesteps_override": args.timesteps,
+            "resume_from_checkpoint_override": args.resume_from_checkpoint,
         },
     }
 
@@ -200,10 +213,39 @@ def save_wandb_config_file(run, config_path):
     wandb.save(str(saved_path), base_path=run.dir, policy="now")
 
 
+def sanitize_path_part(value):
+    sanitized = "".join(
+        char if char.isalnum() or char in ("-", "_") else "_" for char in str(value)
+    )
+    return sanitized.strip("_") or "run"
+
+
+def resolve_output_dirs(train_cfg, wandb_cfg, run):
+    if run:
+        output_dir = Path(run.dir)
+    else:
+        run_name = sanitize_path_part(wandb_cfg.get("run_name", "local"))
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_root = Path(train_cfg.get("output_dir", "runs"))
+        output_dir = output_root / f"{run_name}_{timestamp}_{os.getpid()}"
+
+    checkpoint_dir = output_dir / "checkpoints"
+    tensorboard_log = output_dir / "tensorboard"
+    plot_dir = output_dir / "plots"
+
+    for path in (checkpoint_dir, tensorboard_log, plot_dir):
+        path.mkdir(parents=True, exist_ok=True)
+
+    return output_dir, checkpoint_dir, tensorboard_log, plot_dir
+
+
 def main():
     args = parse_args()
     config = load_config(args.config)
-    train_cfg = config.get("training_configuration", {})
+    train_cfg = dict(config.get("training_configuration", {}))
+    if args.resume_from_checkpoint:
+        train_cfg["resume_from_checkpoint"] = args.resume_from_checkpoint
+
     num_envs, slurm_cpus = resolve_num_envs(train_cfg)
     configure_cpu_threading(num_envs)
 
@@ -214,11 +256,6 @@ def main():
             f"Using {num_envs} training environment(s) "
             f"from SLURM_CPUS_PER_TASK={slurm_cpus}."
         )
-
-    checkpoint_dir = Path(train_cfg.get("checkpoint_dir", "checkpoints/ppo_mask"))
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    tensorboard_log = train_cfg.get("tensorboard_log", "logs/colregs_ppo")
-    Path(tensorboard_log).mkdir(parents=True, exist_ok=True)
 
     wandb_cfg = config.get("wandb_configuration", {})
     run = None
@@ -231,14 +268,18 @@ def main():
         )
         save_wandb_config_file(run, args.config)
 
+    output_dir, checkpoint_dir, tensorboard_log, plot_dir = resolve_output_dirs(
+        train_cfg, wandb_cfg, run
+    )
+    print(f"Writing run outputs to {output_dir}")
+
     model_path = checkpoint_dir / "colregs_maskable_ppo.zip"
 
     if train_cfg.get("remove_existing_logging", False):
-        shutil.rmtree(checkpoint_dir, ignore_errors=True)
-        shutil.rmtree(tensorboard_log, ignore_errors=True)
-        shutil.rmtree(train_cfg.get("plot_dir", "plots"), ignore_errors=True)
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        Path(tensorboard_log).mkdir(parents=True, exist_ok=True)
+        print(
+            "remove_existing_logging is ignored because outputs are stored in a "
+            "fresh run directory."
+        )
 
     env = build_train_env(
         config,
@@ -253,9 +294,8 @@ def main():
         enable_episode_logging=False,
     )
 
-    train_cfg = dict(train_cfg)
-    train_cfg["tensorboard_log"] = tensorboard_log
-    model = build_model(env, model_path, train_cfg)
+    train_cfg["tensorboard_log"] = str(tensorboard_log)
+    model = build_model(env, train_cfg)
 
     checkpoint_callback = CheckpointCallback(
         save_freq=max(int(train_cfg.get("checkpoint_freq", 10000)) // num_envs, 1),
@@ -264,7 +304,7 @@ def main():
     )
     monitor_callback = ColregsMonitorCallback(
         eval_env=eval_env,
-        plot_dir=train_cfg.get("plot_dir", "plots"),
+        plot_dir=str(plot_dir),
         plot_every_episodes=train_cfg.get("plot_every_episodes", 1),
     )
     callback = CallbackList([checkpoint_callback, monitor_callback])
@@ -276,6 +316,9 @@ def main():
     )
 
     model.save(str(model_path))
+    if run:
+        wandb.save(str(checkpoint_dir / "*.zip"), base_path=run.dir, policy="now")
+
     env.close()
     eval_env.close()
 

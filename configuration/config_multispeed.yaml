@@ -1,18 +1,17 @@
 wandb_configuration:
   project: "colregs-ppo"      
-  run_name: multispeed_baseline
+  run_name: min1_max3_certmargin3
   group: null
   enabled: true
 
 training_configuration:
   algorithm: PPO
   policy: MlpPolicy
-  remove_existing_logging: true
+  resume_from_checkpoint: null
+  output_dir: runs
+  remove_existing_logging: false
   training_timesteps: 100000
-  checkpoint_dir: checkpoints/ppo_mask
   checkpoint_freq: 100000
-  tensorboard_log: logs/colregs_ppo
-  plot_dir: plots
   plot_every_episodes: 50
   policy_net_arch: [128, 128]
   n_steps: 512
@@ -28,6 +27,7 @@ environment_configuration:
   sim_dt: 0.25
   initial_surge_command_fraction: 0.5
   min_surge_command_mps: 0.1
+  straight_until_encounter_active: true
   pre_maneuver_duration_s: 5.0
 
   action_constraints:
@@ -40,8 +40,8 @@ environment_configuration:
   masking_configuration:
     debug_action_masker: false
     sim_dt: 0.5
-    min_search_depth: 2
-    decision_depth: 2
+    min_search_depth: 1
+    decision_depth: 3
     certification_margin: 3.0
     fallback_robustness_tolerance: 0.5
     pruning_enabled: false
@@ -77,10 +77,10 @@ environment_configuration:
     maneuver_horizon: 10.0
 
   monitoring_configuration:
-    masking_enabled: false
+    masking_enabled: true 
     monitoring_radius: 40.0
     monitoring_radius_safety_factor: 4.0
-    robustness_margin: 40.0
+    robustness_margin: 50.0
     robustness_sampling_rate: 1
     mask_recompute_interval: 1
 

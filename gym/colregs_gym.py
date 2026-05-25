@@ -153,7 +153,11 @@ class COLREGsGym(McGym):
         self.pre_maneuver_duration_s = float(
             env_cfg.get("pre_maneuver_duration_s", 0.0)
         )
+        self.straight_until_encounter_active = bool(
+            env_cfg.get("straight_until_encounter_active", True)
+        )
         self._neutral_action_mask = self._build_neutral_action_mask()
+        self._straight_hold_released = False
         self._step_count = 0
 
     def _sync_runtime_state(self):
@@ -182,9 +186,26 @@ class COLREGsGym(McGym):
         return mask
 
     def _pre_maneuver_active(self):
+        if self._straight_hold_available():
+            return False
         if self.pre_maneuver_duration_s <= 0.0:
             return False
         return self._step_count * self.dt < self.pre_maneuver_duration_s
+
+    def _straight_hold_available(self):
+        return (
+            self.straight_until_encounter_active
+            and self.masking.enabled
+            and self.spec is not None
+            and self.ellipsoids_Ab_dict is not None
+        )
+
+    def _straight_hold_active(self):
+        return (
+            self._straight_hold_available()
+            and not self._straight_hold_released
+            and not self.state._encounter_active
+        )
 
     def set_encounter(
         self,
@@ -236,14 +257,23 @@ class COLREGsGym(McGym):
         requested_yaw_rate_cmd, requested_surge_accel_cmd = (
             self.vessel_action.decode_discrete_actions(int(action), self.state.sim_state)
         )
+        yaw_rate_cmd = requested_yaw_rate_cmd
+        surge_accel_cmd = requested_surge_accel_cmd
+        psi_d = self.state._current_heading_cmd
+        u_d = self.state._current_surge_cmd
 
         last_tau = np.zeros(3)
+        straight_hold_was_active = False
         pre_maneuver_was_active = False
         min_encounter_distance_interval = np.inf
         for _ in range(self.decision_interval):
+            straight_hold_active = self._straight_hold_active()
             pre_maneuver_active = self._pre_maneuver_active()
+            straight_hold_was_active = (
+                straight_hold_was_active or straight_hold_active
+            )
             pre_maneuver_was_active = pre_maneuver_was_active or pre_maneuver_active
-            if pre_maneuver_active:
+            if straight_hold_active or pre_maneuver_active:
                 yaw_rate_cmd = 0.0
                 surge_accel_cmd = 0.0
             else:
@@ -265,7 +295,11 @@ class COLREGsGym(McGym):
                 info.update(term_info)
                 break
 
-            if pre_maneuver_active:
+            if straight_hold_active:
+                psi_d, u_d, psi_d_dot, psi_d_ddot, u_d_dot = (
+                    self.state.hold_transit_heading()
+                )
+            elif pre_maneuver_active:
                 psi_d, u_d, psi_d_dot, psi_d_ddot, u_d_dot = (
                     self.state.hold_current_commands()
                 )
@@ -326,6 +360,8 @@ class COLREGsGym(McGym):
         if robustness is not None:
             info["robustness"] = robustness
             self._update_encounter_state(robustness)
+            if self.state._encounter_active:
+                self._straight_hold_released = True
 
         self.maneuver_robustness.evaluate(self.state, self._step_count)
 
@@ -338,10 +374,12 @@ class COLREGsGym(McGym):
         self.state.terminal_reason = None
         info.update(reward_info)
         info["encounter_active"] = bool(self.state._encounter_active)
+        info["straight_hold_active"] = bool(straight_hold_was_active)
+        info["straight_hold_released"] = bool(self._straight_hold_released)
         info["pre_maneuver_active"] = bool(pre_maneuver_was_active)
         info["mask_allowed_count"] = int(
             self._neutral_action_mask.sum()
-            if pre_maneuver_was_active
+            if straight_hold_was_active or pre_maneuver_was_active
             else self.state._cached_mask.sum()
         )
         info["mask_fallback"] = bool(self.state.fallback_used)
@@ -369,10 +407,79 @@ class COLREGsGym(McGym):
         info["control/tau_surge"] = float(last_tau[0])
         info["control/tau_yaw"] = float(last_tau[2])
 
+        if (
+            (terminated or truncated)
+            and info.get("reason") == "collision"
+            and self.masking.enabled
+        ):
+            info["collision_plot_data"] = self._build_episode_plot_data()
+
         if (terminated or truncated) and self.callback is not None:
             self.callback.on_episode_end(info, terminated, self.reward)
 
         return obs, reward, terminated, truncated, info
+
+    def _build_episode_plot_data(self):
+        """Return a serializable snapshot of histories for terminal plotting."""
+        goal = self.state.goal
+        collision_radius = self.encounter_scenario.collision_radius
+        obstacle_speed_mps = self.state.encounter_speed
+
+        return {
+            "ego_traj": [list(p) for p in self.history_ego],
+            "enc_traj": [list(p) for p in self.history_enc],
+            "goal": list(goal[:2]) if goal is not None else None,
+            "dt": float(self.dt),
+            "robustness_dt": float(self.dt * self.decision_interval),
+            "collision_radius": (
+                float(collision_radius) if collision_radius is not None else 0.0
+            ),
+            "obstacle_speed_mps": (
+                float(obstacle_speed_mps)
+                if obstacle_speed_mps is not None and np.isfinite(obstacle_speed_mps)
+                else None
+            ),
+            "history_surge_command_fraction": [
+                float(v) for v in self.history_surge_command_fraction
+            ],
+            "history_heading_deg": [float(v) for v in self.history_heading_deg],
+            "history_heading_cmd_deg": [
+                float(v) for v in self.history_heading_cmd_deg
+            ],
+            "history_heading_error_deg": [
+                float(v) for v in self.history_heading_error_deg
+            ],
+            "history_surge": [float(v) for v in self.history_surge],
+            "history_surge_cmd": [float(v) for v in self.history_surge_cmd],
+            "history_tau_surge": [float(v) for v in self.history_tau_surge],
+            "history_tau_yaw": [float(v) for v in self.history_tau_yaw],
+            "history_rob": self._build_robustness_plot_data(self.history_rob),
+            "history_maneuver_rob": self._build_robustness_plot_data(
+                self.history_maneuver_rob
+            ),
+        }
+
+    @staticmethod
+    def _build_robustness_plot_data(history):
+        plot_data = []
+        for rob in history:
+            if rob is None:
+                plot_data.append(None)
+                continue
+
+            trace_list = rob[0]
+            if not trace_list:
+                plot_data.append(None)
+                continue
+
+            _, rob_interval = trace_list[0]
+            plot_data.append(
+                {
+                    "lower": float(rob_interval.l),
+                    "upper": float(rob_interval.u),
+                }
+            )
+        return plot_data
 
     def _populate_masking_diagnostics_info(self, info):
         diagnostics = getattr(self.state, "last_mask_diagnostics", {}) or {}
@@ -429,7 +536,7 @@ class COLREGsGym(McGym):
         self.masking.update_encounter_state(self, robustness)
 
     def action_masks(self):
-        if self._pre_maneuver_active():
+        if self._straight_hold_active() or self._pre_maneuver_active():
             return self._neutral_action_mask.copy()
         return self.masking.action_masks(self)
 
@@ -535,10 +642,14 @@ class COLREGsGym(McGym):
 
         self._sync_runtime_state()
         self._step_count = 0
+        self._straight_hold_released = False
         if hasattr(self._controller, "reset"):
             self._controller.reset()
         self._episode_reward = 0.0
-        self.state.initialize_command_references(self.state.sim_state)
+        self.state.initialize_command_references(
+            self.state.sim_state,
+            use_transit_heading=self._straight_hold_available(),
+        )
         self.state.record()
 
         return self._obs(), {}
