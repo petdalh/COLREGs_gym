@@ -22,6 +22,7 @@ class ColregsReward(Reward):
         extra_handlers = {
             "reward_fallback":          self._build_fallback,
             "reward_acceleration":      self._build_acceleration,
+            "reward_reference_tracking": self._build_reference_tracking,
             "reward_reverse_driving":   self._build_reverse_driving,
             "reward_termination":       self._build_termination,
             "reward_velocity":          self._build_velocity,
@@ -98,6 +99,68 @@ class ColregsReward(Reward):
             yaw_rate_delta_coeff * yaw_rate_delta
             + surge_accel_delta_coeff * surge_accel_delta
         )
+
+    # ------------------------------------------------------------------ #
+    # reward_reference_tracking                                           #
+    # ------------------------------------------------------------------ #
+
+    def _build_reference_tracking(self, cfg):
+        params = {
+            "coefficient": cfg.get("coefficient", -0.05),
+            "heading_error_weight": cfg.get("heading_error_weight", 1.0),
+            "speed_error_weight": cfg.get("speed_error_weight", 1.0),
+            "heading_deadband_rad": np.radians(cfg.get("heading_deadband_deg", 0.0)),
+            "speed_deadband_mps": cfg.get("speed_deadband_mps", 0.0),
+            "heading_scale_rad": np.radians(cfg.get("heading_scale_deg", 30.0)),
+            "speed_scale_mps": cfg.get("speed_scale_mps", 0.1),
+            "reward_min": cfg.get("reward_min", None),
+            "reward_max": cfg.get("reward_max", 0.0),
+        }
+        self.reward_handlers["reward_reference_tracking"] = partial(
+            self._reward_reference_tracking, params
+        )
+
+    @staticmethod
+    def _reward_reference_tracking(params, state, in_radius):
+        if state.sim_state is None:
+            return 0.0
+
+        eta = state.sim_state.get("eta")
+        nu = state.sim_state.get("nu")
+        if eta is None or nu is None:
+            return 0.0
+
+        psi_d = state._current_heading_cmd
+        u_d = state._current_surge_cmd
+
+        heading_penalty = 0.0
+        if psi_d is not None:
+            heading_error = abs(wrap_angle(float(psi_d) - float(eta[-1])))
+            heading_excess = max(0.0, heading_error - params["heading_deadband_rad"])
+            heading_scale = max(float(params["heading_scale_rad"]), 1e-8)
+            heading_penalty = (heading_excess / heading_scale) ** 2
+
+        speed_penalty = 0.0
+        if u_d is not None:
+            speed_error = abs(float(u_d) - float(nu[0]))
+            speed_excess = max(0.0, speed_error - params["speed_deadband_mps"])
+            speed_scale = max(float(params["speed_scale_mps"]), 1e-8)
+            speed_penalty = (speed_excess / speed_scale) ** 2
+
+        penalty = (
+            params["heading_error_weight"] * heading_penalty
+            + params["speed_error_weight"] * speed_penalty
+        )
+        reward = float(params["coefficient"] * penalty)
+
+        reward_min = params["reward_min"]
+        reward_max = params["reward_max"]
+        if reward_min is not None or reward_max is not None:
+            low = -np.inf if reward_min is None else float(reward_min)
+            high = np.inf if reward_max is None else float(reward_max)
+            reward = float(np.clip(reward, low, high))
+
+        return reward
 
     # ------------------------------------------------------------------ #
     # reward_reverse_driving                                              #
@@ -373,7 +436,7 @@ class ColregsReward(Reward):
         # Dynamic sector weight (depends on velocity_y sign)
         sector_weight_dyn = self._sector_dynamic(obs_rel_deg, velocity_y, params)
 
-        weighting_term = -1.0 / (1.0 + np.exp(np.abs(obs_rel_deg)))
+        weighting_term = -1.0 / (1.0 + np.exp(0.5*np.abs(obs_rel_deg)))
 
         raw = params["magnitude"] * np.exp(
             (sector_weight_dyn * velocity_y - sector_weight) * distance

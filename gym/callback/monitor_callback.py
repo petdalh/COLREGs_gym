@@ -1,4 +1,5 @@
 import collections
+import csv
 import os
 
 import numpy as np
@@ -15,10 +16,19 @@ from gym.callback.plotting import (
 
 
 class ColregsMonitorCallback(BaseCallback):
-    def __init__(self, eval_env, plot_dir="plots", plot_every_episodes=50):
+    def __init__(
+        self,
+        eval_env,
+        plot_dir="plots",
+        plot_every_episodes=50,
+        metrics_log_path=None,
+    ):
         super().__init__()
         self.eval_env = getattr(eval_env, "unwrapped", eval_env)
         self.plot_dir = plot_dir
+        self.metrics_log_path = metrics_log_path
+        self._metrics_file = None
+        self._metrics_writer = None
         self.plot_every = int(plot_every_episodes)
         if self.plot_every < 0:
             raise ValueError("plot_every_episodes must be >= 0")
@@ -40,6 +50,8 @@ class ColregsMonitorCallback(BaseCallback):
             "reward_lateral_deviation",
             "reward_wrong_side_crossing",
             "reward_safe_distance",
+            "reward_reference_tracking", 
+            "reward_fallback"
         ]
         self._rolling_reward_means = {
             k: collections.deque(maxlen=10) for k in self._REWARD_KEYS
@@ -114,7 +126,68 @@ class ColregsMonitorCallback(BaseCallback):
         self._cumulative_timeouts = 0
         self._cumulative_wrong_side_crossings = 0
 
+        self._metrics_fieldnames = [
+            "timesteps",
+            "episode_count",
+            "avg_episode_reward",
+            "avg_episode_length",
+            "goal_rate",
+            "collision_rate",
+            "timeout_rate",
+            *[f"reward_components_{k}" for k in self._REWARD_KEYS],
+            "masking_allowed_actions",
+            "masking_allowed_action_fraction",
+            "masking_fallback_rate",
+            *[self._metric_column_name(k) for k in self._MASK_DIAGNOSTIC_KEYS],
+            "events_collisions_cumulative",
+            "events_goals_cumulative",
+            "events_timeouts_cumulative",
+            "events_wrong_side_crossings_cumulative",
+            *[self._metric_column_name(k) for k in self._CONTROL_KEYS],
+        ]
+
         os.makedirs(plot_dir, exist_ok=True)
+
+    @staticmethod
+    def _metric_column_name(key):
+        return key.replace("/", "_")
+
+    @staticmethod
+    def _format_metric_value(value):
+        if value is None:
+            return ""
+        if isinstance(value, float) and not np.isfinite(value):
+            return ""
+        return value
+
+    def _write_metrics_row(self, metrics):
+        if not self.metrics_log_path:
+            return
+
+        if self._metrics_writer is None:
+            os.makedirs(os.path.dirname(self.metrics_log_path), exist_ok=True)
+            self._metrics_file = open(self.metrics_log_path, "w", newline="")
+            self._metrics_writer = csv.DictWriter(
+                self._metrics_file,
+                fieldnames=self._metrics_fieldnames,
+                delimiter="\t",
+                extrasaction="ignore",
+            )
+            self._metrics_writer.writeheader()
+
+        row = {
+            self._metric_column_name(key): self._format_metric_value(value)
+            for key, value in metrics.items()
+        }
+        row["timesteps"] = int(self.num_timesteps)
+        self._metrics_writer.writerow(row)
+        self._metrics_file.flush()
+
+    def _close_metrics_log(self):
+        if self._metrics_file is not None:
+            self._metrics_file.close()
+            self._metrics_file = None
+            self._metrics_writer = None
 
     @staticmethod
     def _resolve_action_count(env):
@@ -276,62 +349,62 @@ class ColregsMonitorCallback(BaseCallback):
                     collisions = sum(1 for r in recent_reasons if r == "collision")
                     goals = sum(1 for r in recent_reasons if r == "goal_reached")
                     timeouts = sum(1 for r in recent_reasons if r == "time_limit")
+                    rew_log = {
+                        f"reward_components/{k}": float(np.mean(v))
+                        for k, v in self._rolling_reward_means.items()
+                        if v
+                    }
+                    masking_log = {}
+                    if self._rolling_mask_allowed:
+                        masking_log["masking/allowed_actions"] = float(
+                            np.mean(self._rolling_mask_allowed)
+                        )
+                    if self._rolling_mask_allowed_fraction:
+                        masking_log["masking/allowed_action_fraction"] = float(
+                            np.mean(self._rolling_mask_allowed_fraction)
+                        )
+                    if self._rolling_fallback_rate:
+                        masking_log["masking/fallback_rate"] = float(
+                            np.mean(self._rolling_fallback_rate)
+                        )
+                    masking_log.update(
+                        {
+                            key: float(np.mean(values))
+                            for key, values in (
+                                self._rolling_mask_diagnostic_means.items()
+                            )
+                            if values
+                        }
+                    )
+                    event_log = {
+                        "events/collisions_cumulative": self._cumulative_collisions,
+                        "events/goals_cumulative": self._cumulative_goals,
+                        "events/timeouts_cumulative": self._cumulative_timeouts,
+                        "events/wrong_side_crossings_cumulative": (
+                            self._cumulative_wrong_side_crossings
+                        ),
+                    }
+                    control_log = {
+                        k: float(np.mean(v))
+                        for k, v in self._rolling_control_means.items()
+                        if v
+                    }
+                    metrics_log = {
+                        "episode_count": self.episode_count,
+                        "avg_episode_reward": avg_r,
+                        "avg_episode_length": avg_l,
+                        "goal_rate": goals / 10,
+                        "collision_rate": collisions / 10,
+                        "timeout_rate": timeouts / 10,
+                        **rew_log,
+                        **masking_log,
+                        **event_log,
+                        **control_log,
+                    }
+                    self._write_metrics_row(metrics_log)
+
                     if wandb.run:
-                        rew_log = {
-                            f"reward_components/{k}": float(np.mean(v))
-                            for k, v in self._rolling_reward_means.items()
-                            if v
-                        }
-                        masking_log = {}
-                        if self._rolling_mask_allowed:
-                            masking_log["masking/allowed_actions"] = float(
-                                np.mean(self._rolling_mask_allowed)
-                            )
-                        if self._rolling_mask_allowed_fraction:
-                            masking_log["masking/allowed_action_fraction"] = float(
-                                np.mean(self._rolling_mask_allowed_fraction)
-                            )
-                        if self._rolling_fallback_rate:
-                            masking_log["masking/fallback_rate"] = float(
-                                np.mean(self._rolling_fallback_rate)
-                            )
-                        masking_log.update(
-                            {
-                                key: float(np.mean(values))
-                                for key, values in (
-                                    self._rolling_mask_diagnostic_means.items()
-                                )
-                                if values
-                            }
-                        )
-                        event_log = {
-                            "events/collisions_cumulative": self._cumulative_collisions,
-                            "events/goals_cumulative": self._cumulative_goals,
-                            "events/timeouts_cumulative": self._cumulative_timeouts,
-                            "events/wrong_side_crossings_cumulative": (
-                                self._cumulative_wrong_side_crossings
-                            ),
-                        }
-                        control_log = {
-                            k: float(np.mean(v))
-                            for k, v in self._rolling_control_means.items()
-                            if v
-                        }
-                        wandb.log(
-                            {
-                                "episode_count": self.episode_count,
-                                "avg_episode_reward": avg_r,
-                                "avg_episode_length": avg_l,
-                                "goal_rate": goals / 10,
-                                "collision_rate": collisions / 10,
-                                "timeout_rate": timeouts / 10,
-                                **rew_log,
-                                **masking_log,
-                                **event_log,
-                                **control_log,
-                            },
-                            step=self.num_timesteps,
-                        )
+                        wandb.log(metrics_log, step=self.num_timesteps)
 
                 while (
                     self.next_plot_episode is not None
@@ -506,8 +579,11 @@ class ColregsMonitorCallback(BaseCallback):
             wandb.log(log_dict, step=self.num_timesteps)
 
     def _on_training_end(self):
-        self._save_training_curves()
-        self._run_eval_episode()
+        try:
+            self._save_training_curves()
+            self._run_eval_episode()
+        finally:
+            self._close_metrics_log()
 
     def _save_training_curves(self):
         import matplotlib.pyplot as plt

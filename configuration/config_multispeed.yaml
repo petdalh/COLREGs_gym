@@ -1,6 +1,6 @@
 wandb_configuration:
   project: "colregs-ppo"      
-  run_name: min1_max3_certmargin3
+  run_name: min1_max3_certmargin3_tracking_coeff_1
   group: null
   enabled: true
 
@@ -10,8 +10,8 @@ training_configuration:
   resume_from_checkpoint: null
   output_dir: runs
   remove_existing_logging: false
-  training_timesteps: 100000
-  checkpoint_freq: 100000
+  training_timesteps: 200000
+  checkpoint_freq: 200000
   plot_every_episodes: 50
   policy_net_arch: [128, 128]
   n_steps: 512
@@ -29,6 +29,9 @@ environment_configuration:
   min_surge_command_mps: 0.1
   straight_until_encounter_active: true
   pre_maneuver_duration_s: 5.0
+
+  observation_configuration:
+    include_reference_tracking_errors: false
 
   action_constraints:
     speed_floor_enabled: true
@@ -87,8 +90,8 @@ environment_configuration:
   reward_configuration:
     # ColregsReward handlers
     reward_fallback:
-      is_enabled: false
-      coefficient: -1
+      is_enabled: true
+      coefficient: -1.5
 
     reward_acceleration:
       is_enabled: true
@@ -97,11 +100,26 @@ environment_configuration:
       # (0.003 m/s^2) to roughly one yaw-rate grid step (0.5 deg/s).
       coefficient: -0.05
       yaw_rate_delta_coefficient: 1.0
-      surge_accel_delta_coefficient: 166.6667
+      surge_accel_delta_coefficient: 0.0
+
+    reward_reference_tracking:
+      is_enabled: false
+      # Small regularizer for references the low-level controller cannot track.
+      # Errors inside the deadband are free; scales normalize larger errors
+      # before squaring. reward_min clips the per-step penalty.
+      coefficient: -0.2
+      heading_error_weight: 2.0
+      speed_error_weight: 0.01
+      heading_deadband_deg: 3.0
+      speed_deadband_mps: 0.02
+      heading_scale_deg: 30.0
+      speed_scale_mps: 0.10
+      reward_min: -1.0
+      reward_max: 0.0
 
     reward_reverse_driving:
       is_enabled: true
-      coefficient: -40.0
+      coefficient: -0.0
 
     reward_termination:
       is_enabled: true
@@ -115,13 +133,13 @@ environment_configuration:
       # Applied to actual surge speed u = sim_state["nu"][0] in m/s.
       low_speed_mps:   0.36
       high_speed_mps:  0.40
-      coefficient:     1.0
+      coefficient:     0.0
 
     reward_goal_distance:
       is_enabled: true
       final_approach_start_dist:           5.0   # c1
-      euclidean_advance_coeff:             1.0   # c2
-      orientation_advance_coeff:           1.0   # c3
+      euclidean_advance_coeff:             0.5   # c2
+      orientation_advance_coeff:           0.2   # c3
       final_approach_euclidean_dist_coeff: 0.0   # c5 (set negative to enable)
       final_approach_distance_coeff:       1.0   # c6
       final_approach_linearization_coeff:  0.0   # c7 (set positive to enable)
@@ -140,11 +158,11 @@ environment_configuration:
 
     reward_safe_distance:
       is_enabled: true
-      magnitude:                   75.0
-      clip:                       -10.0
-      starboard_static_coeff:      0.007
-      port_static_coeff:           0.09
-      stern_static_coeff:          0.01
+      magnitude:                   150.0
+      clip:                       -25.0
+      starboard_static_coeff:      0.003
+      port_static_coeff:           0.03
+      stern_static_coeff:          0.005
       starboard_dyn_plus_coeff:    0.004
       starboard_dyn_minus_coeff:   0.05
       port_dyn_plus_coeff:         0.007

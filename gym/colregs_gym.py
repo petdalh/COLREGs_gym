@@ -110,8 +110,9 @@ class COLREGsGym(McGym):
         )
         self.vessel_action = Action(action_cfg, v_max=ego_vessel_model.v_max)
         self.action_space = spaces.Discrete(self.vessel_action.n_actions)
+        self.observation = Observation(env_cfg.get("observation_configuration", {}))
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(11,), dtype=np.float32
+            low=-np.inf, high=np.inf, shape=(self.observation.dim,), dtype=np.float32
         )
         self.spec = None
         self.maneuver_spec_factory = None
@@ -137,7 +138,6 @@ class COLREGsGym(McGym):
             ),
             min_surge_command_mps=min_surge_command_mps,
         )
-        self.observation = Observation(env_cfg.get("observation_configuration", config))
         self.robustness = Robustness(
             spec=self.spec,
             ellipsoids_Ab_dict=self.ellipsoids_Ab_dict,

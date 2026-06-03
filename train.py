@@ -274,6 +274,7 @@ def main():
     print(f"Writing run outputs to {output_dir}")
 
     model_path = checkpoint_dir / "colregs_maskable_ppo.zip"
+    metrics_log_path = output_dir / "training_metrics.txt"
 
     if train_cfg.get("remove_existing_logging", False):
         print(
@@ -306,6 +307,7 @@ def main():
         eval_env=eval_env,
         plot_dir=str(plot_dir),
         plot_every_episodes=train_cfg.get("plot_every_episodes", 1),
+        metrics_log_path=str(metrics_log_path),
     )
     callback = CallbackList([checkpoint_callback, monitor_callback])
 
@@ -318,6 +320,8 @@ def main():
     model.save(str(model_path))
     if run:
         wandb.save(str(checkpoint_dir / "*.zip"), base_path=run.dir, policy="now")
+        if metrics_log_path.exists():
+            wandb.save(str(metrics_log_path), base_path=run.dir, policy="now")
 
     env.close()
     eval_env.close()
