@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH --partition=short
+#SBATCH --partition=CPUQ
 #SBATCH --account=share-ie-idi
-#SBATCH --time=0-00:20:00
+#SBATCH --time=0-18:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=30
 #SBATCH --mem=32G
-#SBATCH --job-name=colregs_training_test
+#SBATCH --job-name=colregs_multispeed
 #SBATCH --output=logs/job_%j.out
 
 set -eo pipefail
@@ -19,11 +19,4 @@ export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 
-python train.py --config configuration/test_config.yaml
-
-# Run:
-#  - sbatch {job_name}.slurm
-# The to check if it's runnign:
-#  - squeue -u pettdalh
-# And to watch output
-#  - tail -f logs/job_{job_id}.out
+python train.py --config configuration/confiug_no_straight.yaml

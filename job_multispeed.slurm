@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --partition=CPUQ
-#SBATCH --account=share-iv-imt
+#SBATCH --account=share-ie-idi
 #SBATCH --time=0-18:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=32
+#SBATCH --cpus-per-task=30
 #SBATCH --mem=32G
 #SBATCH --job-name=colregs_multispeed
 #SBATCH --output=logs/job_%j.out

@@ -1,5 +1,6 @@
 import collections
 import csv
+import json
 import os
 
 import numpy as np
@@ -8,6 +9,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 import wandb
 
 from gym.callback.plotting import (
+    DEFAULT_CONTROL_SURGE_EMA_ALPHA,
     plot_control_timeseries,
     plot_episode_trajectory,
     plot_robustness,
@@ -16,12 +18,28 @@ from gym.callback.plotting import (
 
 
 class ColregsMonitorCallback(BaseCallback):
+    _DEFAULT_PLOT_SMOOTHING = {
+        "trajectory_window": 1,
+        "speed_profile_window": 1,
+        "robustness_window": 1,
+        "control_heading_window": 1,
+        "control_heading_error_window": 1,
+        "control_surge_ema_alpha": DEFAULT_CONTROL_SURGE_EMA_ALPHA,
+        "control_surge_command_window": 1,
+        "control_actuator_window": 1,
+        "training_step_reward_window": 200,
+        "training_episode_reward_window": 20,
+        "training_episode_length_window": 20,
+        "training_event_rate_window": 20,
+    }
+
     def __init__(
         self,
         eval_env,
         plot_dir="plots",
         plot_every_episodes=50,
         metrics_log_path=None,
+        plot_smoothing=None,
     ):
         super().__init__()
         self.eval_env = getattr(eval_env, "unwrapped", eval_env)
@@ -33,6 +51,10 @@ class ColregsMonitorCallback(BaseCallback):
         if self.plot_every < 0:
             raise ValueError("plot_every_episodes must be >= 0")
         self.next_plot_episode = self.plot_every if self.plot_every > 0 else None
+        self.plot_smoothing = {
+            **self._DEFAULT_PLOT_SMOOTHING,
+            **(plot_smoothing or {}),
+        }
 
         self.step_rewards = []
         self.step_timesteps = []
@@ -160,6 +182,15 @@ class ColregsMonitorCallback(BaseCallback):
             return ""
         return value
 
+    def _smoothing_window(self, key):
+        return max(
+            int(self.plot_smoothing.get(key, self._DEFAULT_PLOT_SMOOTHING[key])),
+            1,
+        )
+
+    def _smoothing_float(self, key):
+        return float(self.plot_smoothing.get(key, self._DEFAULT_PLOT_SMOOTHING[key]))
+
     def _write_metrics_row(self, metrics):
         if not self.metrics_log_path:
             return
@@ -182,6 +213,121 @@ class ColregsMonitorCallback(BaseCallback):
         row["timesteps"] = int(self.num_timesteps)
         self._metrics_writer.writerow(row)
         self._metrics_file.flush()
+
+    @staticmethod
+    def _json_safe(value):
+        if isinstance(value, dict):
+            return {
+                str(k): ColregsMonitorCallback._json_safe(v)
+                for k, v in value.items()
+            }
+        if isinstance(value, (list, tuple)):
+            return [ColregsMonitorCallback._json_safe(v) for v in value]
+        if isinstance(value, np.ndarray):
+            return ColregsMonitorCallback._json_safe(value.tolist())
+        if isinstance(value, np.generic):
+            return ColregsMonitorCallback._json_safe(value.item())
+        if isinstance(value, float):
+            return value if np.isfinite(value) else None
+        return value
+
+    @staticmethod
+    def _wandb_artifact_name(value):
+        return "".join(
+            char if char.isalnum() or char in ("-", "_", ".") else "_"
+            for char in str(value)
+        ).strip("_")
+
+    def _build_action_plot_data(self, actions):
+        vessel_action = self.eval_env.vessel_action
+        n_accel = len(vessel_action.surge_accel_commands)
+        action_indices = [int(action) for action in actions]
+        return {
+            "action_indices": action_indices,
+            "surge_accel_cmd": [
+                float(vessel_action.surge_accel_commands[action % n_accel])
+                for action in action_indices
+            ],
+            "yaw_rate_cmd_deg_s": [
+                float(vessel_action.yaw_rate_commands_deg_s[action // n_accel])
+                for action in action_indices
+            ],
+        }
+
+    def _build_eval_episode_plot_data(self, actions, info, episode_reward):
+        if hasattr(self.eval_env, "_build_episode_plot_data"):
+            plot_data = self.eval_env._build_episode_plot_data()
+        else:
+            plot_data = {
+                "ego_traj": [list(p) for p in self.eval_env.history_ego],
+                "enc_traj": [list(p) for p in self.eval_env.history_enc],
+                "goal": list(self.eval_env.goal[:2]),
+                "dt": float(self.eval_env.dt),
+                "robustness_dt": float(
+                    self.eval_env.dt * getattr(self.eval_env, "decision_interval", 1)
+                ),
+                "history_surge_command_fraction": [
+                    float(v) for v in self.eval_env.history_surge_command_fraction
+                ],
+            }
+
+        plot_data["actions"] = self._build_action_plot_data(actions)
+        plot_data["episode_reward"] = float(episode_reward)
+        plot_data["episode_length"] = int(len(actions))
+        plot_data["termination_reason"] = info.get("reason")
+        return plot_data
+
+    def _write_trajectory_json(self, tag, source, episode_num, plot_data, env_idx=None):
+        trajectory_dir = os.path.join(self.plot_dir, "trajectory_data")
+        os.makedirs(trajectory_dir, exist_ok=True)
+        json_path = os.path.join(trajectory_dir, f"{tag}.json")
+
+        metadata = {
+            "tag": tag,
+            "source": source,
+            "episode_num": int(episode_num),
+            "num_timesteps": int(self.num_timesteps),
+            "plot_every_episodes": int(self.plot_every),
+            "plot_smoothing": self._json_safe(self.plot_smoothing),
+        }
+        if env_idx is not None:
+            metadata["env_idx"] = int(env_idx)
+
+        payload = {
+            "metadata": metadata,
+            "trajectory": plot_data,
+        }
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(
+                self._json_safe(payload),
+                f,
+                indent=2,
+                sort_keys=True,
+                allow_nan=False,
+            )
+        return json_path
+
+    def _log_trajectory_artifact(self, json_path, tag, source, episode_num, env_idx=None):
+        if not wandb.run:
+            return
+
+        metadata = {
+            "tag": tag,
+            "source": source,
+            "episode_num": int(episode_num),
+            "num_timesteps": int(self.num_timesteps),
+        }
+        if env_idx is not None:
+            metadata["env_idx"] = int(env_idx)
+
+        run_id = getattr(wandb.run, "id", "run")
+        artifact = wandb.Artifact(
+            name=self._wandb_artifact_name(f"{run_id}_{tag}_trajectory_data"),
+            type="trajectory-data",
+            metadata=metadata,
+        )
+        artifact.add_file(json_path, name=os.path.basename(json_path))
+        wandb.run.log_artifact(artifact)
 
     def _close_metrics_log(self):
         if self._metrics_file is not None:
@@ -422,12 +568,15 @@ class ColregsMonitorCallback(BaseCallback):
         obs, _ = self.eval_env.reset()
         done = False
         ep_actions = []
+        ep_reward = 0.0
+        info = {}
 
         while not done:
             masks = self.eval_env.action_masks()
             action, _ = self.model.predict(obs, action_masks=masks, deterministic=True)
             ep_actions.append(int(action))
             obs, reward, terminated, truncated, info = self.eval_env.step(action)
+            ep_reward += float(reward)
             done = terminated or truncated
 
         tag = f"ep{episode_num:05d}"
@@ -442,12 +591,14 @@ class ColregsMonitorCallback(BaseCallback):
             episode_num=episode_num,
             collision_radius=self.eval_env.encounter_scenario.collision_radius,
             obstacle_speed_mps=self.eval_env.state.encounter_speed,
+            smoothing_window=self._smoothing_window("trajectory_window"),
             save_path=os.path.join(self.plot_dir, f"traj_{tag}.png"),
         )
 
         plot_surge_command_fraction(
             history_surge_command_fraction=self.eval_env.history_surge_command_fraction,
             dt=self.eval_env.dt,
+            smoothing_window=self._smoothing_window("speed_profile_window"),
             save_path=os.path.join(self.plot_dir, f"speed_{tag}.png"),
         )
 
@@ -456,6 +607,7 @@ class ColregsMonitorCallback(BaseCallback):
             dt=step_dt,
             save_path=os.path.join(self.plot_dir, f"rob_{tag}.png"),
             title="Crossing Detection",
+            smoothing_window=self._smoothing_window("robustness_window"),
         )
 
         plot_robustness(
@@ -463,6 +615,7 @@ class ColregsMonitorCallback(BaseCallback):
             dt=step_dt,
             save_path=os.path.join(self.plot_dir, f"maneuver_rob_{tag}.png"),
             title="Maneuver Spec",
+            smoothing_window=self._smoothing_window("robustness_window"),
         )
 
         plot_control_timeseries(
@@ -474,10 +627,37 @@ class ColregsMonitorCallback(BaseCallback):
             history_tau_surge=self.eval_env.history_tau_surge,
             history_tau_yaw=self.eval_env.history_tau_yaw,
             dt=self.eval_env.dt,
+            surge_ema_alpha=self._smoothing_float("control_surge_ema_alpha"),
+            heading_smoothing_window=self._smoothing_window("control_heading_window"),
+            heading_error_smoothing_window=self._smoothing_window(
+                "control_heading_error_window"
+            ),
+            surge_cmd_smoothing_window=self._smoothing_window(
+                "control_surge_command_window"
+            ),
+            actuator_smoothing_window=self._smoothing_window("control_actuator_window"),
             save_path=os.path.join(self.plot_dir, f"control_{tag}.png"),
         )
 
+        trajectory_data = self._build_eval_episode_plot_data(
+            ep_actions,
+            info,
+            ep_reward,
+        )
+        trajectory_json_path = self._write_trajectory_json(
+            tag=tag,
+            source="eval",
+            episode_num=episode_num,
+            plot_data=trajectory_data,
+        )
+
         if wandb.run:
+            self._log_trajectory_artifact(
+                trajectory_json_path,
+                tag=tag,
+                source="eval",
+                episode_num=episode_num,
+            )
             log_dict = {
                 "trajectory": wandb.Image(os.path.join(self.plot_dir, f"traj_{tag}.png")),
                 "speed_profile": wandb.Image(os.path.join(self.plot_dir, f"speed_{tag}.png")),
@@ -532,6 +712,7 @@ class ColregsMonitorCallback(BaseCallback):
             episode_num=episode_num,
             collision_radius=plot_data.get("collision_radius", 0.0),
             obstacle_speed_mps=plot_data.get("obstacle_speed_mps"),
+            smoothing_window=self._smoothing_window("trajectory_window"),
             save_path=traj_path,
         )
 
@@ -544,6 +725,15 @@ class ColregsMonitorCallback(BaseCallback):
             history_tau_surge=plot_data.get("history_tau_surge", []),
             history_tau_yaw=plot_data.get("history_tau_yaw", []),
             dt=plot_data.get("dt", 0.5),
+            surge_ema_alpha=self._smoothing_float("control_surge_ema_alpha"),
+            heading_smoothing_window=self._smoothing_window("control_heading_window"),
+            heading_error_smoothing_window=self._smoothing_window(
+                "control_heading_error_window"
+            ),
+            surge_cmd_smoothing_window=self._smoothing_window(
+                "control_surge_command_window"
+            ),
+            actuator_smoothing_window=self._smoothing_window("control_actuator_window"),
             save_path=control_path,
         )
 
@@ -555,6 +745,7 @@ class ColregsMonitorCallback(BaseCallback):
                 dt=robustness_dt,
                 save_path=rob_path,
                 title="Crossing Detection",
+                smoothing_window=self._smoothing_window("robustness_window"),
             )
 
         history_maneuver_rob = plot_data.get("history_maneuver_rob", [])
@@ -564,9 +755,25 @@ class ColregsMonitorCallback(BaseCallback):
                 dt=robustness_dt,
                 save_path=maneuver_rob_path,
                 title="Maneuver Spec",
+                smoothing_window=self._smoothing_window("robustness_window"),
             )
 
+        trajectory_json_path = self._write_trajectory_json(
+            tag=tag,
+            source="collision",
+            episode_num=episode_num,
+            plot_data=plot_data,
+            env_idx=env_idx,
+        )
+
         if wandb.run:
+            self._log_trajectory_artifact(
+                trajectory_json_path,
+                tag=tag,
+                source="collision",
+                episode_num=episode_num,
+                env_idx=env_idx,
+            )
             log_dict = {"collisions/trajectory": wandb.Image(traj_path)}
             if os.path.exists(control_path):
                 log_dict["collisions/control"] = wandb.Image(control_path)
@@ -591,29 +798,52 @@ class ColregsMonitorCallback(BaseCallback):
         fig, axes = plt.subplots(6, 1, figsize=(10, 19))
 
         axes[0].plot(self.step_timesteps, self.step_rewards, alpha=0.15, color="purple")
-        if len(self.step_rewards) >= 200:
-            rolling = np.convolve(self.step_rewards, np.ones(200) / 200, mode="valid")
-            axes[0].plot(self.step_timesteps[199:], rolling, color="purple")
+        step_window = self._smoothing_window("training_step_reward_window")
+        if len(self.step_rewards) >= step_window:
+            rolling = np.convolve(
+                self.step_rewards,
+                np.ones(step_window) / step_window,
+                mode="valid",
+            )
+            axes[0].plot(self.step_timesteps[step_window - 1 :], rolling, color="purple")
         axes[0].set_ylabel("Step Reward")
         axes[0].set_xlabel("Training Timesteps")
         axes[0].set_title("Training Progress")
         axes[0].grid(True, alpha=0.3)
 
         axes[1].plot(self.episode_rewards, alpha=0.3, color="blue")
-        if len(self.episode_rewards) >= 20:
-            rolling = np.convolve(self.episode_rewards, np.ones(20) / 20, mode="valid")
-            axes[1].plot(range(19, 19 + len(rolling)), rolling, color="blue")
+        reward_window = self._smoothing_window("training_episode_reward_window")
+        if len(self.episode_rewards) >= reward_window:
+            rolling = np.convolve(
+                self.episode_rewards,
+                np.ones(reward_window) / reward_window,
+                mode="valid",
+            )
+            axes[1].plot(
+                range(reward_window - 1, reward_window - 1 + len(rolling)),
+                rolling,
+                color="blue",
+            )
         axes[1].set_ylabel("Episode Reward")
         axes[1].grid(True, alpha=0.3)
 
         axes[2].plot(self.episode_lengths, alpha=0.3, color="green")
-        if len(self.episode_lengths) >= 20:
-            rolling = np.convolve(self.episode_lengths, np.ones(20) / 20, mode="valid")
-            axes[2].plot(range(19, 19 + len(rolling)), rolling, color="green")
+        length_window = self._smoothing_window("training_episode_length_window")
+        if len(self.episode_lengths) >= length_window:
+            rolling = np.convolve(
+                self.episode_lengths,
+                np.ones(length_window) / length_window,
+                mode="valid",
+            )
+            axes[2].plot(
+                range(length_window - 1, length_window - 1 + len(rolling)),
+                rolling,
+                color="green",
+            )
         axes[2].set_ylabel("Episode Length")
         axes[2].grid(True, alpha=0.3)
 
-        window = 20
+        window = self._smoothing_window("training_event_rate_window")
         if len(self.episode_reasons) >= window:
             goals = []
             collisions = []
@@ -641,7 +871,7 @@ class ColregsMonitorCallback(BaseCallback):
             axes[5].grid(True, alpha=0.3)
         else:
             for ax in axes[3:]:
-                ax.set_ylabel("Rate (last 20)")
+                ax.set_ylabel(f"Rate (last {window})")
                 ax.set_ylim(0, 1)
                 ax.grid(True, alpha=0.3)
 

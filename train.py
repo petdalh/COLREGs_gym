@@ -1,9 +1,11 @@
 import argparse
 import os
+import random
 import shutil
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 from sb3_contrib import MaskablePPO
 from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecMonitor
@@ -47,7 +49,7 @@ def configure_monitoring(env, monitoring_cfg):
     return True
 
 
-def make_env(config, enable_monitoring, enable_episode_logging=True):
+def make_env(config, enable_monitoring, enable_episode_logging=True, seed=None):
     env_cfg = config.get("environment_configuration", {})
     encounter_cfg = dict(env_cfg.get("encounter_configuration", {}))
     monitoring_cfg = env_cfg.get("monitoring_configuration", {})
@@ -56,7 +58,11 @@ def make_env(config, enable_monitoring, enable_episode_logging=True):
         vessel_model=USV_DEFAULT,
         ego_vessel_model=EGO_VESSEL_DEFAULT,
         config=config,
+        seed=seed,
     )
+    if seed is not None:
+        env.action_space.seed(seed)
+        env.observation_space.seed(seed)
     
     encounter_cfg.pop("maneuver_horizon", None)
     env.set_encounter(**encounter_cfg)
@@ -114,18 +120,19 @@ def configure_cpu_threading(num_envs):
     torch.set_num_threads(1)
 
 
-def make_train_env_fn(config, enable_monitoring, enable_episode_logging):
+def make_train_env_fn(config, enable_monitoring, enable_episode_logging, seed=None):
     def _init():
         return make_env(
             config,
             enable_monitoring=enable_monitoring,
             enable_episode_logging=enable_episode_logging,
+            seed=seed,
         )
 
     return _init
 
 
-def build_train_env(config, num_envs, train_cfg, enable_monitoring):
+def build_train_env(config, num_envs, train_cfg, enable_monitoring, seed=None):
     enable_episode_logging = bool(
         train_cfg.get("print_episode_summary", num_envs == 1)
     )
@@ -134,15 +141,22 @@ def build_train_env(config, num_envs, train_cfg, enable_monitoring):
             config,
             enable_monitoring=enable_monitoring,
             enable_episode_logging=enable_episode_logging,
+            seed=None if seed is None else seed + worker_idx,
         )
-        for _ in range(num_envs)
+        for worker_idx in range(num_envs)
     ]
 
     if num_envs == 1:
-        return VecMonitor(DummyVecEnv(env_fns))
+        env = VecMonitor(DummyVecEnv(env_fns))
+        if seed is not None:
+            env.seed(seed)
+        return env
 
     start_method = train_cfg.get("vec_env_start_method", "forkserver")
-    return VecMonitor(SubprocVecEnv(env_fns, start_method=start_method))
+    env = VecMonitor(SubprocVecEnv(env_fns, start_method=start_method))
+    if seed is not None:
+        env.seed(seed)
+    return env
 
 
 def build_model(env, train_cfg):
@@ -169,6 +183,7 @@ def build_model(env, train_cfg):
         n_steps=train_cfg.get("n_steps", 128),
         batch_size=train_cfg.get("batch_size", 32),
         learning_rate=train_cfg.get("learning_rate", 3e-4),
+        seed=train_cfg.get("seed"),
     )
 
 
@@ -194,7 +209,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def build_wandb_config(config, args):
+def build_wandb_config(config, args, seed=None, seed_index=0, seeds=None):
     return {
         **config,
         "run_metadata": {
@@ -202,6 +217,9 @@ def build_wandb_config(config, args):
             "disable_monitoring": args.disable_monitoring,
             "timesteps_override": args.timesteps,
             "resume_from_checkpoint_override": args.resume_from_checkpoint,
+            "seed": seed,
+            "seed_index": seed_index,
+            "seeds": seeds,
         },
     }
 
@@ -220,11 +238,20 @@ def sanitize_path_part(value):
     return sanitized.strip("_") or "run"
 
 
-def resolve_output_dirs(train_cfg, wandb_cfg, run):
+def seed_run_name(run_name, seed):
+    if seed is None:
+        return run_name
+    base_name = run_name or "run"
+    return f"{base_name}_seed_{seed}"
+
+
+def resolve_output_dirs(train_cfg, wandb_cfg, run, seed=None):
     if run:
         output_dir = Path(run.dir)
     else:
-        run_name = sanitize_path_part(wandb_cfg.get("run_name", "local"))
+        run_name = sanitize_path_part(
+            seed_run_name(wandb_cfg.get("run_name", "local"), seed)
+        )
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_root = Path(train_cfg.get("output_dir", "runs"))
         output_dir = output_root / f"{run_name}_{timestamp}_{os.getpid()}"
@@ -239,13 +266,58 @@ def resolve_output_dirs(train_cfg, wandb_cfg, run):
     return output_dir, checkpoint_dir, tensorboard_log, plot_dir
 
 
-def main():
-    args = parse_args()
-    config = load_config(args.config)
-    train_cfg = dict(config.get("training_configuration", {}))
+def resolve_training_seeds(train_cfg):
+    if "seeds" in train_cfg and train_cfg["seeds"] is not None:
+        seeds = [int(seed) for seed in train_cfg["seeds"]]
+        if not seeds:
+            raise ValueError("training_configuration.seeds must not be empty.")
+        return seeds
+    if "seed" in train_cfg and train_cfg["seed"] is not None:
+        return [int(train_cfg["seed"])]
+    return [None]
+
+
+def set_global_seed(seed):
+    if seed is None:
+        return
+
+    random.seed(seed)
+    np.random.seed(seed)
+    try:
+        import torch
+    except ImportError:
+        return
+
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def log_final_model_to_wandb(run, model_path, config_path, seed, total_timesteps, train_cfg):
+    wandb.save(str(model_path), base_path=run.dir, policy="now")
+    artifact_name = sanitize_path_part(f"{run.name or run.id}_final_model")
+    artifact = wandb.Artifact(
+        name=artifact_name,
+        type="model",
+        metadata={
+            "algorithm": train_cfg.get("algorithm", "PPO"),
+            "seed": seed,
+            "total_timesteps": total_timesteps,
+            "config_path": str(Path(config_path).resolve()),
+        },
+    )
+    artifact.add_file(str(model_path), name="colregs_maskable_ppo.zip")
+    run.log_artifact(artifact)
+
+
+def train_one_seed(args, config, base_train_cfg, seed, seed_index, seeds):
+    train_cfg = dict(base_train_cfg)
+    if seed is not None:
+        train_cfg["seed"] = seed
     if args.resume_from_checkpoint:
         train_cfg["resume_from_checkpoint"] = args.resume_from_checkpoint
 
+    set_global_seed(seed)
     num_envs, slurm_cpus = resolve_num_envs(train_cfg)
     configure_cpu_threading(num_envs)
 
@@ -257,14 +329,21 @@ def main():
             f"from SLURM_CPUS_PER_TASK={slurm_cpus}."
         )
 
-    wandb_cfg = config.get("wandb_configuration", {})
+    wandb_cfg = dict(config.get("wandb_configuration", {}))
+    wandb_cfg["run_name"] = seed_run_name(wandb_cfg.get("run_name"), seed)
     run = None
     if wandb_cfg.get("enabled", False):
         run = wandb.init(
             project=wandb_cfg.get("project", "colregs-ppo"),
             name=wandb_cfg.get("run_name"),
             group=wandb_cfg.get("group"),
-            config=build_wandb_config(config, args),
+            config=build_wandb_config(
+                config,
+                args,
+                seed=seed,
+                seed_index=seed_index,
+                seeds=seeds,
+            ),
         )
         save_wandb_config_file(run, args.config)
 
@@ -287,12 +366,14 @@ def main():
         num_envs=num_envs,
         train_cfg=train_cfg,
         enable_monitoring=not args.disable_monitoring,
+        seed=seed,
     )
 
     eval_env = make_env(
         config,
         enable_monitoring=not args.disable_monitoring,
         enable_episode_logging=False,
+        seed=None if seed is None else seed + 100000,
     )
 
     train_cfg["tensorboard_log"] = str(tensorboard_log)
@@ -308,11 +389,13 @@ def main():
         plot_dir=str(plot_dir),
         plot_every_episodes=train_cfg.get("plot_every_episodes", 1),
         metrics_log_path=str(metrics_log_path),
+        plot_smoothing=train_cfg.get("plot_smoothing"),
     )
     callback = CallbackList([checkpoint_callback, monitor_callback])
 
+    total_timesteps = args.timesteps or train_cfg.get("training_timesteps", 100000)
     model.learn(
-        total_timesteps=args.timesteps or train_cfg.get("training_timesteps", 100000),
+        total_timesteps=total_timesteps,
         callback=callback,
         reset_num_timesteps=False,
     )
@@ -320,6 +403,14 @@ def main():
     model.save(str(model_path))
     if run:
         wandb.save(str(checkpoint_dir / "*.zip"), base_path=run.dir, policy="now")
+        log_final_model_to_wandb(
+            run,
+            model_path,
+            args.config,
+            seed,
+            total_timesteps,
+            train_cfg,
+        )
         if metrics_log_path.exists():
             wandb.save(str(metrics_log_path), base_path=run.dir, policy="now")
 
@@ -328,6 +419,18 @@ def main():
 
     if run:
         run.finish()
+
+
+def main():
+    args = parse_args()
+    config = load_config(args.config)
+    base_train_cfg = dict(config.get("training_configuration", {}))
+    seeds = resolve_training_seeds(base_train_cfg)
+
+    for seed_index, seed in enumerate(seeds):
+        if len(seeds) > 1:
+            print(f"Starting training seed {seed} ({seed_index + 1}/{len(seeds)}).")
+        train_one_seed(args, config, base_train_cfg, seed, seed_index, seeds)
 
 
 if __name__ == "__main__":

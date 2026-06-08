@@ -1,6 +1,6 @@
 wandb_configuration:
   project: "colregs-ppo"      
-  run_name: min1_max3_certmargin3_tracking_coeff_1
+  run_name: t_h30_cert_margin0.0
   group: null
   enabled: true
 
@@ -10,9 +10,23 @@ training_configuration:
   resume_from_checkpoint: null
   output_dir: runs
   remove_existing_logging: false
+  seeds: [0, 1, 2]
   training_timesteps: 200000
   checkpoint_freq: 200000
   plot_every_episodes: 50
+  plot_smoothing:
+    trajectory_window: 1
+    speed_profile_window: 1
+    robustness_window: 1
+    control_heading_window: 1
+    control_heading_error_window: 1
+    control_surge_ema_alpha: 0.1
+    control_surge_command_window: 1
+    control_actuator_window: 1
+    training_step_reward_window: 200
+    training_episode_reward_window: 20
+    training_episode_length_window: 20
+    training_event_rate_window: 20
   policy_net_arch: [128, 128]
   n_steps: 512
   batch_size: 64
@@ -45,7 +59,7 @@ environment_configuration:
     sim_dt: 0.5
     min_search_depth: 1
     decision_depth: 3
-    certification_margin: 3.0
+    certification_margin: 0.0
     fallback_robustness_tolerance: 0.5
     pruning_enabled: false
     pruning_threshold: -2.0
@@ -70,8 +84,7 @@ environment_configuration:
     wave_conditions: [0.05, 1.5, 0.0]
     encounter_type: crossing
     separation: 30.0
-    target_speed: 0.2
-    target_speeds: [0.08, 0.15, 0.2]
+    target_speed_range: [0.08, 0.2]
     time_to_conflict_s: 120.0
     target_cross_track_noise_m: 0.0
     goal_ahead_distance: 50.0
@@ -91,7 +104,7 @@ environment_configuration:
     # ColregsReward handlers
     reward_fallback:
       is_enabled: true
-      coefficient: -1.5
+      coefficient: -1.0
 
     reward_acceleration:
       is_enabled: true

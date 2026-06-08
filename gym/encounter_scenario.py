@@ -23,6 +23,7 @@ class EncounterScenario:
         self.separation = None
         self.target_speed = None
         self.target_speed_options = None
+        self.target_speed_range = None
         self.time_to_conflict_s = None
         self.ego_reference_speed = None
         self.heading_noise_deg = 5.0
@@ -48,6 +49,7 @@ class EncounterScenario:
         separation=30.0,
         target_speed=0.3,
         target_speeds=None,
+        target_speed_range=None,
         time_to_conflict_s=None,
         ego_reference_speed=None,
         heading_noise_deg=5.0,
@@ -58,17 +60,23 @@ class EncounterScenario:
         simtime=150.0,
         masking_configuration=None,
     ):
-        if target_speeds is not None and time_to_conflict_s is None:
+        if (
+            target_speed_range is not None or target_speeds is not None
+        ) and time_to_conflict_s is None:
             raise ValueError(
-                "target_speeds requires time_to_conflict_s so sampled speeds "
+                "Sampled target speeds require time_to_conflict_s so sampled speeds "
                 "produce speed-aware crossing geometry."
             )
 
+        target_speed_range = self._normalize_target_speed_range(target_speed_range)
         target_speed_options = self._normalize_target_speeds(
             target_speed=target_speed,
             target_speeds=target_speeds,
         )
-        for speed in target_speed_options:
+        speeds_to_validate = (
+            target_speed_range if target_speed_range is not None else target_speed_options
+        )
+        for speed in speeds_to_validate:
             self._validate_target_speed(speed)
 
         own_n, own_e, own_psi_deg = start_position
@@ -77,6 +85,7 @@ class EncounterScenario:
         self.wave_conditions = wave_conditions
         self.encounter_type = encounter_type
         self.separation = separation
+        self.target_speed_range = target_speed_range
         self.target_speed_options = target_speed_options
         self.time_to_conflict_s = (
             None if time_to_conflict_s is None else float(time_to_conflict_s)
@@ -113,6 +122,19 @@ class EncounterScenario:
             raise ValueError("target_speeds must contain only finite values.")
         return speeds
 
+    def _normalize_target_speed_range(self, target_speed_range):
+        if target_speed_range is None:
+            return None
+
+        speed_range = np.asarray(target_speed_range, dtype=float).reshape(-1)
+        if speed_range.size != 2:
+            raise ValueError("target_speed_range must contain exactly two speeds.")
+        if not np.all(np.isfinite(speed_range)):
+            raise ValueError("target_speed_range must contain only finite values.")
+        if speed_range[0] > speed_range[1]:
+            raise ValueError("target_speed_range min must be <= max.")
+        return speed_range
+
     def _validate_target_speed(self, speed):
         if self.v_max is not None and speed > self.v_max:
             raise ValueError(
@@ -125,6 +147,9 @@ class EncounterScenario:
             )
 
     def _sample_target_speed(self):
+        if self.target_speed_range is not None:
+            low, high = self.target_speed_range
+            return float(self._rng.uniform(low, high))
         if self.target_speed_options is None:
             return self.target_speed
         speed_idx = self._rng.integers(len(self.target_speed_options))

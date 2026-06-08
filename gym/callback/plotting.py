@@ -12,7 +12,12 @@ from matplotlib.colors import Normalize
 plt.rcParams.update(
     {
         "font.family": "serif",
-        "font.serif": ["Computer Modern Roman", "CMU Serif", "Times New Roman"],
+        "font.serif": [
+            "Computer Modern Roman",
+            "CMU Serif",
+            "Times New Roman",
+            "DejaVu Serif",
+        ],
         "mathtext.fontset": "cm",
         "text.usetex": False,  # set True if LaTeX is available
         "axes.linewidth": 0.6,
@@ -94,6 +99,40 @@ _SPEED_NORM = Normalize(
     vmin=float(np.min(_COMMAND_FRACTIONS)),
     vmax=float(np.max(_COMMAND_FRACTIONS)),
 )
+DEFAULT_CONTROL_SURGE_EMA_ALPHA = 0.1
+
+
+def _smoothing_window(value, default=1):
+    if value is None:
+        return int(default)
+    return max(int(value), 1)
+
+
+def _moving_average(values, window=1):
+    window = _smoothing_window(window)
+    arr = np.asarray(values, dtype=float)
+    if window <= 1 or arr.size == 0:
+        return arr
+
+    valid = np.isfinite(arr)
+    kernel = np.ones(window, dtype=float)
+    sums = np.convolve(np.where(valid, arr, 0.0), kernel, mode="same")
+    counts = np.convolve(valid.astype(float), kernel, mode="same")
+    out = np.full_like(arr, np.nan, dtype=float)
+    np.divide(sums, counts, out=out, where=counts > 0)
+    return out
+
+
+def _moving_average_columns(values, window=1):
+    arr = np.asarray(values, dtype=float)
+    if arr.ndim != 2:
+        return arr
+    window = _smoothing_window(window)
+    if window <= 1:
+        return arr
+    return np.column_stack(
+        [_moving_average(arr[:, col], window) for col in range(arr.shape[1])]
+    )
 
 
 def plot_episode_trajectory(
@@ -107,6 +146,7 @@ def plot_episode_trajectory(
     save_path: str | None = None,
     ego_speed_traj: list | None = None,
     obstacle_speed_mps: float | None = None,
+    smoothing_window: int = 1,
 ):
     # ── Figure (single-column width ≈ 3.5 in for two-column papers) ──
     fig, ax = plt.subplots(figsize=(3.6, 3.6))
@@ -120,6 +160,9 @@ def plot_episode_trajectory(
             n = min(len(ego_arr), len(ego_speed_arr))
             ego_arr = ego_arr[:n]
             ego_speed_arr = ego_speed_arr[:n]
+
+    ego_arr = _moving_average_columns(ego_arr, smoothing_window)
+    enc_arr = _moving_average_columns(enc_arr, smoothing_window)
 
     # ── Ego trajectory (speed-coloured or solid) ─────────────────────
     if ego_speed_arr is not None and len(ego_arr) > 1:
@@ -289,10 +332,12 @@ def plot_surge_command_fraction(
     history_surge_command_fraction: list,
     dt: float = 0.5,
     save_path: str | None = None,
+    smoothing_window: int = 1,
 ):
     arr = np.asarray(history_surge_command_fraction, dtype=float)
+    plot_arr = _moving_average(arr, smoothing_window)
     times = np.arange(len(arr)) * dt
-    valid = np.isfinite(arr)
+    valid = np.isfinite(plot_arr)
 
     if not np.any(valid):
         return
@@ -300,7 +345,16 @@ def plot_surge_command_fraction(
     fig, ax = plt.subplots(figsize=(3.6, 1.6))
     fig.subplots_adjust(bottom=0.28, top=0.95, left=0.12, right=0.97)
 
-    ax.step(times[valid], arr[valid], where="post", color=_EGO_CLR, linewidth=0.8)
+    if _smoothing_window(smoothing_window) > 1:
+        ax.plot(times[valid], plot_arr[valid], color=_EGO_CLR, linewidth=0.8)
+    else:
+        ax.step(
+            times[valid],
+            plot_arr[valid],
+            where="post",
+            color=_EGO_CLR,
+            linewidth=0.8,
+        )
     ax.set_ylabel(r"$u_d / v_{\max}$")
     ax.set_xlabel(r"$t$ (s)")
     ax.tick_params(top=True, right=True, which="both")
@@ -322,6 +376,11 @@ def plot_control_timeseries(
     history_tau_yaw: list,
     dt: float = 0.5,
     save_path: str | None = None,
+    surge_ema_alpha: float = DEFAULT_CONTROL_SURGE_EMA_ALPHA,
+    heading_smoothing_window: int = 1,
+    heading_error_smoothing_window: int = 1,
+    surge_cmd_smoothing_window: int = 1,
+    actuator_smoothing_window: int = 1,
 ):
     n = len(history_heading_deg)
     if n == 0:
@@ -335,6 +394,12 @@ def plot_control_timeseries(
     surge_cmd = np.asarray(history_surge_cmd, dtype=float)
     tau_s = np.asarray(history_tau_surge, dtype=float)
     tau_y = np.asarray(history_tau_yaw, dtype=float)
+    hdg = _moving_average(hdg, heading_smoothing_window)
+    hdg_cmd = _moving_average(hdg_cmd, heading_smoothing_window)
+    hdg_err = _moving_average(hdg_err, heading_error_smoothing_window)
+    surge_cmd = _moving_average(surge_cmd, surge_cmd_smoothing_window)
+    tau_s = _moving_average(tau_s, actuator_smoothing_window)
+    tau_y = _moving_average(tau_y, actuator_smoothing_window)
 
     _CMD_CLR = "#888888"
     _ERR_CLR = "#c44e52"
@@ -357,8 +422,11 @@ def plot_control_timeseries(
     axes[1].tick_params(top=True, right=True, which="both")
 
     # Panel 3 — surge velocity
-    alpha_ema = 0.1  # ~5 s time constant at dt=0.5, matching MRAC reference model
     def _ema(x):
+        alpha_ema = float(surge_ema_alpha)
+        if alpha_ema >= 1.0:
+            return x
+        alpha_ema = max(alpha_ema, 0.0)
         out = np.zeros_like(x)
         out[0] = x[0]
         for i in range(1, len(x)):
@@ -396,6 +464,7 @@ def plot_robustness(
     dt: float = 0.5,
     save_path: str | None = None,
     title: str | None = None,
+    smoothing_window: int = 1,
 ):
     times, lowers, uppers = [], [], []
 
@@ -424,6 +493,8 @@ def plot_robustness(
     times = np.array(times)
     lowers = np.array(lowers)
     uppers = np.array(uppers)
+    lowers = _moving_average(lowers, smoothing_window)
+    uppers = _moving_average(uppers, smoothing_window)
 
     # ── Single-column width, short height (good for stacking) ────────
     fig, ax = plt.subplots(figsize=(3.6, 1.6))

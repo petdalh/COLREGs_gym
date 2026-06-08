@@ -33,6 +33,7 @@ class COLREGsGym(McGym):
         monitoring_radius_safety_factor=None,
         robustness_margin=None,
         config=None,
+        seed=None,
         **kwargs,
     ):
         config = resolve_config(config)
@@ -107,6 +108,7 @@ class COLREGsGym(McGym):
             maneuver_horizon=maneuver_horizon,
             monitoring_radius_safety_factor=monitoring_radius_safety_factor,
             masking_configuration=masking_cfg,
+            seed=seed,
         )
         self.vessel_action = Action(action_cfg, v_max=ego_vessel_model.v_max)
         self.action_space = spaces.Discrete(self.vessel_action.n_actions)
@@ -215,6 +217,7 @@ class COLREGsGym(McGym):
         separation=30.0,
         target_speed=0.3,
         target_speeds=None,
+        target_speed_range=None,
         time_to_conflict_s=None,
         ego_reference_speed=None,
         heading_noise_deg=5.0,
@@ -236,6 +239,7 @@ class COLREGsGym(McGym):
             separation=separation,
             target_speed=target_speed,
             target_speeds=target_speeds,
+            target_speed_range=target_speed_range,
             time_to_conflict_s=time_to_conflict_s,
             ego_reference_speed=ego_reference_speed,
             heading_noise_deg=heading_noise_deg,
@@ -637,7 +641,7 @@ class COLREGsGym(McGym):
         if seed is not None:
             self._rng = np.random.default_rng(seed)
 
-        self.encounter_scenario.reset(self.state)
+        self.encounter_scenario.reset(self.state, seed=seed)
         self._refresh_monitoring_for_current_speed()
 
         self._sync_runtime_state()
