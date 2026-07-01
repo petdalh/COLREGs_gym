@@ -1,6 +1,6 @@
 wandb_configuration:
   project: "colregs-ppo"      
-  run_name: t_h30_cert_margin0.0
+  run_name: t_h25_cert_margin0.0_depth1
   group: null
   enabled: true
 
@@ -58,7 +58,7 @@ environment_configuration:
     debug_action_masker: false
     sim_dt: 0.5
     min_search_depth: 1
-    decision_depth: 3
+    decision_depth: 1
     certification_margin: 0.0
     fallback_robustness_tolerance: 0.5
     pruning_enabled: false
@@ -82,6 +82,7 @@ environment_configuration:
   encounter_configuration:
     start_position: [1.5, 7.5, 0.0]
     wave_conditions: [0.05, 1.5, 0.0]
+    wave_direction_range_deg: [0.0, 360.0]
     encounter_type: crossing
     separation: 30.0
     target_speed_range: [0.08, 0.2]

@@ -227,6 +227,7 @@ class COLREGsGym(McGym):
         collision_radius=1.0,
         simtime=150.0,
         masking_configuration=None,
+        wave_direction_range_deg=None,
     ):
         if ego_reference_speed is None and time_to_conflict_s is not None:
             ego_reference_speed = (
@@ -249,6 +250,7 @@ class COLREGsGym(McGym):
             collision_radius=collision_radius,
             simtime=simtime,
             masking_configuration=masking_configuration,
+            wave_direction_range_deg=wave_direction_range_deg,
         )
         self.masking.configure_for_scenario(self.encounter_scenario)
         self.encounter_scenario.apply(self)
@@ -617,6 +619,9 @@ class COLREGsGym(McGym):
         return False, False, {}
 
     def reset(self, seed=None, options=None):
+        if self.encounter_scenario.start_position is not None:
+            self.encounter_scenario.prepare_reset(seed=seed)
+            self.encounter_scenario.apply(self)
         obs, info = super().reset(seed=seed, options=options)
         self.state.reset()
         self.reward.reset()
@@ -638,10 +643,7 @@ class COLREGsGym(McGym):
         self.history_tau_surge = self.state.history_tau_surge
         self.history_tau_yaw = self.state.history_tau_yaw
 
-        if seed is not None:
-            self._rng = np.random.default_rng(seed)
-
-        self.encounter_scenario.reset(self.state, seed=seed)
+        self.encounter_scenario.reset(self.state, prepared=True)
         self._refresh_monitoring_for_current_speed()
 
         self._sync_runtime_state()

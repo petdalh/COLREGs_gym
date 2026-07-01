@@ -2,6 +2,7 @@ import collections
 import csv
 import json
 import os
+import warnings
 
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
@@ -77,6 +78,16 @@ class ColregsMonitorCallback(BaseCallback):
         ]
         self._rolling_reward_means = {
             k: collections.deque(maxlen=10) for k in self._REWARD_KEYS
+        }
+        self._rolling_reward_sums = {
+            k: collections.deque(maxlen=10) for k in self._REWARD_KEYS
+        }
+        self.step_reward_components = {k: [] for k in self._REWARD_KEYS}
+        self.step_rates = {
+            "goal_rate": [],
+            "collision_rate": [],
+            "timeout_rate": [],
+            "masking_fallback_rate": [],
         }
 
         self._rolling_mask_allowed = collections.deque(maxlen=10)
@@ -157,6 +168,7 @@ class ColregsMonitorCallback(BaseCallback):
             "collision_rate",
             "timeout_rate",
             *[f"reward_components_{k}" for k in self._REWARD_KEYS],
+            *[f"reward_component_sums_{k}" for k in self._REWARD_KEYS],
             "masking_allowed_actions",
             "masking_allowed_action_fraction",
             "masking_fallback_rate",
@@ -387,12 +399,18 @@ class ColregsMonitorCallback(BaseCallback):
         if isinstance(infos, dict):
             infos = [infos]
         self._ensure_env_accumulators(len(infos))
+        step_reward_values = {k: [] for k in self._REWARD_KEYS}
+        step_goal_events = 0
+        step_collision_events = 0
+        step_timeout_events = 0
+        step_fallback_flags = []
 
         for env_idx, info in enumerate(infos):
             for key in self._REWARD_KEYS:
                 val = info.get(key)
                 if val is not None:
                     val = float(val)
+                    step_reward_values[key].append(val)
                     self._ep_reward_sums[env_idx][key] += val
                     if (
                         key == "reward_wrong_side_crossing"
@@ -419,6 +437,7 @@ class ColregsMonitorCallback(BaseCallback):
                         allowed_count / self._total_actions
                     )
                 self._ep_fallback_flags[env_idx].append(int(info["mask_fallback"]))
+                step_fallback_flags.append(int(info["mask_fallback"]))
                 for key in self._MASK_DIAGNOSTIC_KEYS:
                     val = info.get(key)
                     if val is not None:
@@ -434,11 +453,14 @@ class ColregsMonitorCallback(BaseCallback):
                 reason = info.get("reason", "unknown")
                 self.episode_reasons.append(reason)
                 if reason == "collision":
+                    step_collision_events += 1
                     self._cumulative_collisions += 1
                     self._plot_collision_episode(info, self.episode_count, env_idx)
                 elif reason == "goal_reached":
+                    step_goal_events += 1
                     self._cumulative_goals += 1
                 elif reason == "time_limit":
+                    step_timeout_events += 1
                     self._cumulative_timeouts += 1
 
                 if self._ep_wrong_side_crossing[env_idx]:
@@ -446,7 +468,27 @@ class ColregsMonitorCallback(BaseCallback):
                 self._ep_wrong_side_crossing[env_idx] = False
 
                 if self._ep_reward_steps[env_idx] > 0:
+                    component_sum = sum(self._ep_reward_sums[env_idx].values())
+                    episode_return = float(info["episode"]["r"])
+                    if not np.isclose(
+                        component_sum,
+                        episode_return,
+                        atol=1e-6,
+                        rtol=1e-5,
+                    ):
+                        warnings.warn(
+                            "Reward component sum mismatch: "
+                            f"episode={self.episode_count}, env_idx={env_idx}, "
+                            f"episode_return={episode_return:.12g}, "
+                            f"component_sum={component_sum:.12g}, "
+                            f"delta={component_sum - episode_return:.12g}",
+                            RuntimeWarning,
+                            stacklevel=2,
+                        )
                     for k in self._REWARD_KEYS:
+                        self._rolling_reward_sums[k].append(
+                            self._ep_reward_sums[env_idx][k]
+                        )
                         self._rolling_reward_means[k].append(
                             self._ep_reward_sums[env_idx][k]
                             / self._ep_reward_steps[env_idx]
@@ -500,6 +542,11 @@ class ColregsMonitorCallback(BaseCallback):
                         for k, v in self._rolling_reward_means.items()
                         if v
                     }
+                    rew_sum_log = {
+                        f"reward_component_sums/{k}": float(np.mean(v))
+                        for k, v in self._rolling_reward_sums.items()
+                        if v
+                    }
                     masking_log = {}
                     if self._rolling_mask_allowed:
                         masking_log["masking/allowed_actions"] = float(
@@ -543,6 +590,7 @@ class ColregsMonitorCallback(BaseCallback):
                         "collision_rate": collisions / 10,
                         "timeout_rate": timeouts / 10,
                         **rew_log,
+                        **rew_sum_log,
                         **masking_log,
                         **event_log,
                         **control_log,
@@ -558,6 +606,31 @@ class ColregsMonitorCallback(BaseCallback):
                 ):
                     self._run_eval_episode(episode_num=self.next_plot_episode)
                     self.next_plot_episode += self.plot_every
+
+        step_rew_log = {}
+        for key, values in step_reward_values.items():
+            if values:
+                step_value = float(np.mean(values))
+                self.step_reward_components[key].append(step_value)
+                step_rew_log[f"reward_component_steps/{key}"] = step_value
+        step_rate_log = {}
+        if infos:
+            n_envs = len(infos)
+            step_rates = {
+                "goal_rate": step_goal_events / n_envs,
+                "collision_rate": step_collision_events / n_envs,
+                "timeout_rate": step_timeout_events / n_envs,
+            }
+            for key, value in step_rates.items():
+                step_value = float(value)
+                self.step_rates[key].append(step_value)
+                step_rate_log[f"rate_steps/{key}"] = step_value
+        if step_fallback_flags:
+            step_value = float(np.mean(step_fallback_flags))
+            self.step_rates["masking_fallback_rate"].append(step_value)
+            step_rate_log["rate_steps/masking_fallback_rate"] = step_value
+        if (step_rew_log or step_rate_log) and wandb.run:
+            wandb.log({**step_rew_log, **step_rate_log}, step=self.num_timesteps)
 
         return True
 

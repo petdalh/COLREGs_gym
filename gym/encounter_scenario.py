@@ -18,7 +18,9 @@ class EncounterScenario:
         self.default_masking_configuration = dict(masking_configuration or {})
         self.masking_configuration = dict(self.default_masking_configuration)
         self.start_position = None
+        self.base_wave_conditions = None
         self.wave_conditions = None
+        self.wave_direction_range_deg = None
         self.encounter_type = None
         self.separation = None
         self.target_speed = None
@@ -59,6 +61,7 @@ class EncounterScenario:
         collision_radius=1.0,
         simtime=150.0,
         masking_configuration=None,
+        wave_direction_range_deg=None,
     ):
         if (
             target_speed_range is not None or target_speeds is not None
@@ -73,6 +76,10 @@ class EncounterScenario:
             target_speed=target_speed,
             target_speeds=target_speeds,
         )
+        wave_conditions = self._normalize_wave_conditions(wave_conditions)
+        wave_direction_range_deg = self._normalize_wave_direction_range_deg(
+            wave_direction_range_deg
+        )
         speeds_to_validate = (
             target_speed_range if target_speed_range is not None else target_speed_options
         )
@@ -82,7 +89,8 @@ class EncounterScenario:
         own_n, own_e, own_psi_deg = start_position
 
         self.start_position = start_position
-        self.wave_conditions = wave_conditions
+        self.base_wave_conditions = wave_conditions
+        self.wave_direction_range_deg = wave_direction_range_deg
         self.encounter_type = encounter_type
         self.separation = separation
         self.target_speed_range = target_speed_range
@@ -96,7 +104,7 @@ class EncounterScenario:
         self.heading_noise_deg = float(heading_noise_deg)
         self.encounter_position_noise_m = float(encounter_position_noise_m)
         self.target_cross_track_noise_m = float(target_cross_track_noise_m)
-        self.target_speed = self._sample_target_speed()
+        self.target_speed = None
         self.goal_ahead_distance = goal_ahead_distance
         self.collision_radius = float(collision_radius)
         self.simtime = float(simtime)
@@ -105,11 +113,68 @@ class EncounterScenario:
             **dict(masking_configuration or {}),
         }
         self.nominal_path_start = np.array([own_n, own_e], dtype=float)
-    
-        if encounter_type == "crossing":
+
+        self.prepare_reset()
+
+    def _normalize_wave_conditions(self, wave_conditions):
+        waves = np.asarray(wave_conditions, dtype=float).reshape(-1)
+        if waves.size != 3:
+            raise ValueError(
+                "wave_conditions must contain exactly three values: "
+                "(Hs, Tp, wave_dir_deg)."
+            )
+        if not np.all(np.isfinite(waves)):
+            raise ValueError("wave_conditions must contain only finite values.")
+        return tuple(float(value) for value in waves)
+
+    def _normalize_wave_direction_range_deg(self, wave_direction_range_deg):
+        if wave_direction_range_deg is None:
+            return None
+
+        direction_range = np.asarray(wave_direction_range_deg, dtype=float).reshape(-1)
+        if direction_range.size != 2:
+            raise ValueError(
+                "wave_direction_range_deg must contain exactly two directions."
+            )
+        if not np.all(np.isfinite(direction_range)):
+            raise ValueError(
+                "wave_direction_range_deg must contain only finite values."
+            )
+
+        low, high = direction_range
+        if low < 0.0 or high > 360.0:
+            raise ValueError("wave_direction_range_deg must lie within [0, 360].")
+        if low >= high:
+            raise ValueError("wave_direction_range_deg min must be < max.")
+        return (float(low), float(high))
+
+    def _sample_wave_conditions(self):
+        if self.base_wave_conditions is None:
+            return None
+        if self.wave_direction_range_deg is None:
+            return self.base_wave_conditions
+
+        hs, tp, _ = self.base_wave_conditions
+        low, high = self.wave_direction_range_deg
+        wave_dir_deg = float(self._rng.uniform(low, high))
+        return (hs, tp, wave_dir_deg)
+
+    def prepare_reset(self, seed=None):
+        """Re-roll sampled encounter and wave parameters for the next reset."""
+        if seed is not None:
+            self._rng = np.random.default_rng(seed=seed)
+
+        if self.start_position is None or self._rng is None:
+            self.wave_conditions = self._sample_wave_conditions()
+            return
+
+        self.target_speed = self._sample_target_speed()
+        own_n, own_e, own_psi_deg = self.start_position
+        if self.encounter_type == "crossing":
             self._set_crossing_encounter(own_n, own_e, own_psi_deg)
         else:
-            raise ValueError(f"Unsupported encounter type: {encounter_type}")
+            raise ValueError(f"Unsupported encounter type: {self.encounter_type}")
+        self.wave_conditions = self._sample_wave_conditions()
 
     def _normalize_target_speeds(self, target_speed, target_speeds):
         if target_speeds is None:
@@ -264,15 +329,10 @@ class EncounterScenario:
         state.encounter_vessel_eta = encounter_vessel_eta
         state.encounter_speed = self.target_speed
     
-    def reset(self, state, seed=None):
-        """Re-roll noise and apply the encounter to the given state."""
-        if seed is not None:
-            self._rng = np.random.default_rng(seed=seed)
-            
-        if self.start_position is not None and self._rng is not None:
-            self.target_speed = self._sample_target_speed()
-            own_n, own_e, own_psi_deg = self.start_position
-            self._set_crossing_encounter(own_n, own_e, own_psi_deg, noise=self._rng)
+    def reset(self, state, seed=None, prepared=False):
+        """Apply prepared episode parameters to the state."""
+        if not prepared:
+            self.prepare_reset(seed=seed)
 
         encounter_eta = self._encounter_init.copy() if self._encounter_init is not None else None
         self.apply_to_state(state, encounter_eta)
